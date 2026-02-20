@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  db:
+    image: mariadb:11
+    container_name: dc_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpassword
+      MARIADB_DATABASE: dc_db
+      MARIADB_USER: dc_user
+      MARIADB_PASSWORD: dc_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+
+  server:
+    build:
+      context: ../server
+      dockerfile: ../docker/server.Dockerfile
+    container_name: dc_server
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: dc_db
+      DB_USER: dc_user
+      DB_PASSWORD: dc_password
+    volumes:
+      - ../server:/app
+
+volumes:
+  mariadb_data:
