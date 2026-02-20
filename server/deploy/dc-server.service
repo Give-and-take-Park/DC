@@ -1,0 +1,29 @@
+[Unit]
+Description=MLCC 계측기 데이터 수집 서버 (FastAPI/Uvicorn)
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+User=dc
+Group=dc
+
+# 프로젝트를 /opt/dc 에 배포한 경우
+WorkingDirectory=/opt/dc/server
+
+# 가상환경의 Python 실행파일을 직접 지정
+ExecStart=/opt/dc/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+Restart=on-failure
+RestartSec=5s
+
+# 서버 프로세스에서 참조하는 환경변수 파일
+EnvironmentFile=/opt/dc/server/.env
+Environment=PYTHONPATH=/opt/dc/server
+
+# 보안 강화 (선택)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

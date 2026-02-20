@@ -2,3 +2,5 @@ PyQt6>=6.6.0
 httpx>=0.27.0
 pydantic-settings>=2.0.0
 pyinstaller>=6.0.0
+pyvisa>=1.14.0
+pyvisa-py>=0.7.0

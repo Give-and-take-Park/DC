@@ -3,19 +3,57 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DC Dashboard</title>
+    <title>MLCC 계측 대시보드</title>
     <link rel="stylesheet" href="/static/css/dashboard.css" />
 </head>
 <body>
     <header>
-        <h1>DC Dashboard</h1>
+        <h1>MLCC 계측 데이터 대시보드</h1>
     </header>
     <main>
         <section id="summary-cards">
-            <!-- 요약 통계 카드 -->
+            <div class="card">
+                <span class="card-label">총 측정 수</span>
+                <span class="card-value" id="total-measurements">-</span>
+            </div>
+            <div class="card">
+                <span class="card-label">총 세션 수</span>
+                <span class="card-value" id="total-sessions">-</span>
+            </div>
         </section>
+
+        <section id="filter-bar">
+            <label for="char-filter">특성 필터:</label>
+            <select id="char-filter">
+                <option value="">전체</option>
+                <option value="capacitance">Capacitance</option>
+                <option value="esr">ESR</option>
+                <option value="df">DF</option>
+                <option value="impedance">Impedance</option>
+                <option value="q_factor">Q Factor</option>
+                <option value="dc_bias">DC Bias</option>
+            </select>
+        </section>
+
         <section id="data-table">
-            <!-- 데이터 목록 테이블 -->
+            <h2>최근 측정 데이터</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>측정시각</th>
+                        <th>세션 ID</th>
+                        <th>특성</th>
+                        <th>값</th>
+                        <th>단위</th>
+                        <th>주파수 (Hz)</th>
+                        <th>DC 바이어스 (V)</th>
+                        <th>온도 (°C)</th>
+                    </tr>
+                </thead>
+                <tbody id="records-body">
+                    <tr><td colspan="8">로딩 중...</td></tr>
+                </tbody>
+            </table>
         </section>
     </main>
     <script src="/static/js/dashboard.js"></script>
