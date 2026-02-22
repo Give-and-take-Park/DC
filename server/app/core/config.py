@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:8000"]
 
+    # JWT
+    secret_key: str = "change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 480  # 8시간
+
+    # 초기 관리자 계정 (.env로 재정의 가능)
+    admin_username: str = "admin"
+    admin_password_hash: str = ""  # hash_password()로 생성한 값을 .env에 설정
+
     @property
     def database_url(self) -> str:
         return (

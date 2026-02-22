@@ -1,0 +1,324 @@
+/* ============================================================
+   Clean Light Theme — MLCC Data Collector
+   Palette:
+     Background : #F4F6F9
+     Header     : #1E3A5F
+     Accent     : #2563EB
+     Card       : #FFFFFF
+     Border     : #E2E8F0
+     Text-main  : #1E293B
+     Text-sub   : #64748B
+     Text-light : #CBD5E1
+   ============================================================ */
+
+/* ---------- 전체 기본 ---------- */
+QMainWindow,
+QDialog {
+    background: #F4F6F9;
+    color: #1E293B;
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    font-size: 13px;
+}
+
+QWidget {
+    color: #1E293B;
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+/* ---------- 헤더 바 ---------- */
+QWidget#header {
+    background: #1E3A5F;
+    border: none;
+}
+
+QLabel#header-title {
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+QLabel#header-instrument {
+    color: #CBD5E1;
+    font-size: 12px;
+}
+
+QPushButton#header-btn {
+    background: transparent;
+    color: #CBD5E1;
+    border: 1px solid #3B5A8A;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+QPushButton#header-btn:hover {
+    background: #2D5F9A;
+    color: #FFFFFF;
+}
+
+/* ---------- 상태바 ---------- */
+QStatusBar {
+    background: #1E3A5F;
+    color: #CBD5E1;
+    font-size: 11px;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+/* ---------- 카드 위젯 ---------- */
+QWidget#card {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+}
+
+/* ---------- 측정 카드 버튼 ---------- */
+QPushButton#measurement-card {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    color: #1E293B;
+    text-align: left;
+    padding: 16px;
+}
+
+QPushButton#measurement-card:hover {
+    border: 2px solid #2563EB;
+    background: #F0F6FF;
+}
+
+QPushButton#measurement-card:pressed {
+    background: #DBEAFE;
+}
+
+/* ---------- 기본 버튼 ---------- */
+QPushButton#primary {
+    background: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QPushButton#primary:hover {
+    background: #1D4ED8;
+}
+
+QPushButton#primary:pressed {
+    background: #1E40AF;
+}
+
+QPushButton#primary:disabled {
+    background: #93C5FD;
+}
+
+/* ---------- 보조 버튼 ---------- */
+QPushButton#secondary {
+    background: transparent;
+    color: #2563EB;
+    border: 1px solid #2563EB;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 13px;
+}
+
+QPushButton#secondary:hover {
+    background: #EFF6FF;
+}
+
+/* ---------- 입력 필드 ---------- */
+QLineEdit {
+    background: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #1E293B;
+    font-size: 13px;
+    selection-background-color: #DBEAFE;
+}
+
+QLineEdit:focus {
+    border: 2px solid #2563EB;
+}
+
+QLineEdit:disabled {
+    background: #F1F5F9;
+    color: #94A3B8;
+}
+
+/* ---------- 라벨 ---------- */
+QLabel#section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748B;
+    text-transform: uppercase;
+}
+
+QLabel#value-display {
+    font-size: 36px;
+    font-weight: bold;
+    color: #1E3A5F;
+}
+
+QLabel#value-unit {
+    font-size: 14px;
+    color: #64748B;
+}
+
+QLabel#error-label {
+    color: #DC2626;
+    font-size: 12px;
+}
+
+QLabel#status-ok {
+    color: #16A34A;
+    font-size: 12px;
+}
+
+QLabel#status-err {
+    color: #DC2626;
+    font-size: 12px;
+}
+
+/* ---------- 테이블 ---------- */
+QTableWidget {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 4px;
+    gridline-color: #F1F5F9;
+    font-size: 12px;
+}
+
+QTableWidget::item {
+    padding: 6px 10px;
+    border: none;
+}
+
+QTableWidget::item:selected {
+    background: #DBEAFE;
+    color: #1E3A5F;
+}
+
+QHeaderView::section {
+    background: #F8FAFC;
+    color: #64748B;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border: none;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+/* ---------- 스피너/진행 ---------- */
+QProgressBar {
+    background: #E2E8F0;
+    border: none;
+    border-radius: 4px;
+    height: 6px;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background: #2563EB;
+    border-radius: 4px;
+}
+
+/* ---------- 스크롤바 ---------- */
+QScrollBar:vertical {
+    background: #F1F5F9;
+    width: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #CBD5E1;
+    border-radius: 4px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #94A3B8;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+/* ---------- 구분선 ---------- */
+QFrame[frameShape="4"],
+QFrame[frameShape="5"] {
+    color: #E2E8F0;
+}
+
+/* ---------- 콤보박스 ---------- */
+QComboBox {
+    background: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #1E293B;
+    font-size: 13px;
+}
+
+QComboBox:focus {
+    border: 2px solid #2563EB;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    selection-background-color: #DBEAFE;
+    selection-color: #1E3A5F;
+}
+
+/* ---------- 스핀박스 ---------- */
+QDoubleSpinBox,
+QSpinBox {
+    background: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #1E293B;
+    font-size: 13px;
+}
+
+QDoubleSpinBox:focus,
+QSpinBox:focus {
+    border: 2px solid #2563EB;
+}
+
+/* ---------- 그룹박스 ---------- */
+QGroupBox {
+    border: 1px solid #E2E8F0;
+    border-radius: 6px;
+    margin-top: 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #64748B;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    left: 12px;
+}
+
+/* ---------- 스플리터 ---------- */
+QSplitter::handle {
+    background: #E2E8F0;
+}
+
+QSplitter::handle:horizontal {
+    width: 1px;
+}

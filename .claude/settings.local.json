@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:\\\\Users\\\\gun10\\\\dev\\\\DC\\\\client\\\\app\"\" -type f -name \"*.py \")"
+    ]
+  }
+}

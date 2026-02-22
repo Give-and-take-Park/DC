@@ -24,3 +24,7 @@ class BaseLCRMeter(BaseInstrument):
     def set_dc_bias(self, bias: float) -> None:
         """DC 바이어스 전압 설정 (V)"""
         raise NotImplementedError
+
+    def disable_dc_bias(self) -> None:
+        """DC 바이어스 출력을 0 V로 복귀하고 비활성화한다."""
+        raise NotImplementedError
