@@ -33,22 +33,22 @@ QWidget#header {
 
 QLabel#header-title {
     color: #FFFFFF;
-    font-size: 16px;
+    font-size: 20px;
     font-weight: bold;
 }
 
 QLabel#header-instrument {
     color: #CBD5E1;
-    font-size: 12px;
+    font-size: 16px;
 }
 
 QPushButton#header-btn {
     background: transparent;
     color: #CBD5E1;
     border: 1px solid #3B5A8A;
-    border-radius: 4px;
-    padding: 4px 12px;
-    font-size: 12px;
+    border-radius: 5px;
+    padding: 6px 18px;
+    font-size: 14px;
 }
 
 QPushButton#header-btn:hover {
@@ -60,7 +60,7 @@ QPushButton#header-btn:hover {
 QStatusBar {
     background: #1E3A5F;
     color: #CBD5E1;
-    font-size: 11px;
+    font-size: 13px;
 }
 
 QStatusBar::item {
@@ -77,15 +77,15 @@ QWidget#card {
 /* ---------- 측정 카드 버튼 ---------- */
 QPushButton#measurement-card {
     background: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 8px;
+    border: 1.5px solid #E2E8F0;
+    border-radius: 14px;
     color: #1E293B;
     text-align: left;
-    padding: 16px;
+    padding: 0px;
 }
 
 QPushButton#measurement-card:hover {
-    border: 2px solid #2563EB;
+    border: 2.5px solid #2563EB;
     background: #F0F6FF;
 }
 
@@ -128,6 +128,47 @@ QPushButton#secondary {
 
 QPushButton#secondary:hover {
     background: #EFF6FF;
+}
+
+/* ---------- DC Bias 전용 버튼 (헤더 배경색 기반) ---------- */
+QPushButton#dc-primary {
+    background: #1E3A5F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QPushButton#dc-primary:hover {
+    background: #2D5F9A;
+}
+
+QPushButton#dc-primary:pressed {
+    background: #162D48;
+}
+
+QPushButton#dc-primary:disabled {
+    background: #6B8FAD;
+}
+
+QPushButton#dc-secondary {
+    background: transparent;
+    color: #1E3A5F;
+    border: 1px solid #3B5A8A;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 13px;
+}
+
+QPushButton#dc-secondary:hover {
+    background: #EBF0F7;
+}
+
+QPushButton#dc-secondary:disabled {
+    color: #94A3B8;
+    border-color: #94A3B8;
 }
 
 /* ---------- 입력 필드 ---------- */

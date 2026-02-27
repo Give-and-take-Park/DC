@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -39,6 +40,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -50,6 +52,7 @@ from PyQt6.QtWidgets import (
 
 from app.config.settings import Settings
 from app.core.api_client import APIClient
+from app.core.measurement_engine import MeasurementEngine
 from app.instruments.base import BaseInstrument
 from app.instruments.drivers.lcr_meter.base_lcr import BaseLCRMeter
 
@@ -164,12 +167,43 @@ class _SweepWorker(QObject):
                 pass  # 정리 실패는 무시 (이미 예외 처리 완료)
 
 
+# ── 복사 지원 테이블 ─────────────────────────────────────────────
+class _CopyableTable(QTableWidget):
+    """마우스 드래그·Shift+Click·Ctrl+Click으로 셀 범위 선택 후
+    Ctrl+C로 클립보드에 탭 구분 텍스트(Excel 호환)를 복사하는 테이블."""
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self._copy_selection()
+        else:
+            super().keyPressEvent(event)
+
+    def _copy_selection(self) -> None:
+        ranges = self.selectedRanges()
+        if not ranges:
+            return
+        min_row = min(r.topRow() for r in ranges)
+        max_row = max(r.bottomRow() for r in ranges)
+        min_col = min(r.leftColumn() for r in ranges)
+        max_col = max(r.rightColumn() for r in ranges)
+
+        lines: list[str] = []
+        for row in range(min_row, max_row + 1):
+            cells: list[str] = []
+            for col in range(min_col, max_col + 1):
+                item = self.item(row, col)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+        QApplication.clipboard().setText("\n".join(lines))
+
+
 # ── DC Bias 측정 페이지 ──────────────────────────────────────────
 class DCBiasMeasurementPage(QWidget):
     """DC Bias 전압 스윕 측정 전용 페이지."""
 
     back_requested = pyqtSignal()
     status_message = pyqtSignal(str)
+    instrument_connected = pyqtSignal(str)   # (model_name) → MainWindow 상태바 갱신
 
     def __init__(
         self,
@@ -200,9 +234,9 @@ class DCBiasMeasurementPage(QWidget):
         splitter.setHandleWidth(1)
         splitter.addWidget(self._build_condition_panel())
         splitter.addWidget(self._build_result_panel())
-        splitter.setSizes([280, 900])
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([300, 900])
+        splitter.setStretchFactor(0, 0)   # 조건 패널: 사용자 드래그만으로 조절
+        splitter.setStretchFactor(1, 1)   # 결과 패널: 창 확장 시 자동으로 늘어남
 
         root.addWidget(splitter)
 
@@ -239,17 +273,53 @@ class DCBiasMeasurementPage(QWidget):
     # ── 왼쪽: 조건 패널 ─────────────────────────────────────────
     def _build_condition_panel(self) -> QWidget:
         container = QWidget()
-        container.setFixedWidth(280)
-        container.setStyleSheet("background: #FFFFFF; border-right: 1px solid #E2E8F0;")
+        container.setObjectName("dc-condition-panel")
+        container.setFixedWidth(300)   # 창 크기 변경 시에도 너비 고정
+        # 셀렉터 없는 인라인 스타일은 자식 QPushButton까지 background: white 를
+        # 덮어쓰므로 반드시 objectName 스코프 셀렉터를 사용한다
+        container.setStyleSheet(
+            "QWidget#dc-condition-panel { background: #FFFFFF; border-right: 1px solid #E2E8F0; }"
+        )
 
-        outer = QVBoxLayout(container)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(12)
+        # ── 메인 레이아웃: 스크롤 영역(상단) + 고정 버튼(하단) ──
+        main_layout = QVBoxLayout(container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ── 측정 조건 폼 ────────────────────────────────────────
+        # ── 스크롤 영역 (계측기 + 측정 조건 + 상태) ─────────────
+        scroll_content = QWidget()
+        inner = QVBoxLayout(scroll_content)
+        inner.setContentsMargins(12, 12, 12, 8)
+        inner.setSpacing(8)
+
+        # 계측기 그룹
+        instr_box = QGroupBox("계측기")
+        instr_form = QFormLayout(instr_box)
+        instr_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        instr_form.setVerticalSpacing(10)
+        instr_form.setHorizontalSpacing(12)
+        instr_form.setContentsMargins(12, 18, 12, 10)
+
+        self._instr_status_label = QLabel("미연결")
+        self._instr_status_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        instr_form.addRow("상태:", self._instr_status_label)
+
+        self._instr_connect_btn = QPushButton("계측기 연결")
+        self._instr_connect_btn.setObjectName("secondary")
+        self._instr_connect_btn.setMinimumHeight(34)
+        self._instr_connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._instr_connect_btn.clicked.connect(self._on_instrument_connect)
+        instr_form.addRow(self._instr_connect_btn)
+
+        inner.addWidget(instr_box)
+
+        # 측정 조건 그룹
         cond_box = QGroupBox("측정 조건")
         form = QFormLayout(cond_box)
-        form.setSpacing(10)
+        # AllNonFixedFieldsGrow: 스핀박스가 패널 잔여 너비를 채워 레이블·입력칸 간격 확보
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(12)
         form.setContentsMargins(12, 20, 12, 12)
 
         self._freq_spin = QDoubleSpinBox()
@@ -294,14 +364,13 @@ class DCBiasMeasurementPage(QWidget):
         form.addRow("전압 스텝:", self._step_spin)
         form.addRow("지연 시간:", self._delay_spin)
 
-        outer.addWidget(cond_box)
+        inner.addWidget(cond_box)
 
-        # ── 측정 횟수 표시 ──────────────────────────────────────
+        # 측정 횟수 + 진행 + 상태
         self._count_label = QLabel("측정 횟수: 0회")
         self._count_label.setStyleSheet("color: #64748B; font-size: 12px;")
-        outer.addWidget(self._count_label)
+        inner.addWidget(self._count_label)
 
-        # ── 진행 표시 ───────────────────────────────────────────
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
@@ -309,47 +378,64 @@ class DCBiasMeasurementPage(QWidget):
         self._progress_bar.setFormat("%v / %m 포인트")
         self._progress_bar.setFixedHeight(18)
         self._progress_bar.hide()
-        outer.addWidget(self._progress_bar)
+        inner.addWidget(self._progress_bar)
 
-        # ── 상태 메시지 ─────────────────────────────────────────
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: #64748B; font-size: 11px;")
         self._status_label.setWordWrap(True)
-        outer.addWidget(self._status_label)
+        inner.addWidget(self._status_label)
 
-        outer.addStretch()
+        inner.addStretch()
 
-        # ── 버튼들 ──────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(scroll_content)
+        main_layout.addWidget(scroll, 1)
+
+        # ── 고정 버튼 섹션 (항상 보임) ──────────────────────────
+        btn_widget = QWidget()
+        btn_widget.setObjectName("dc-btn-panel")
+        btn_widget.setStyleSheet(
+            "QWidget#dc-btn-panel { background: #FFFFFF; border-top: 1px solid #E2E8F0; }"
+        )
+        btn_layout = QVBoxLayout(btn_widget)
+        btn_layout.setContentsMargins(16, 12, 16, 16)
+        btn_layout.setSpacing(8)
+
         self._start_btn = QPushButton("▶  측정 시작")
-        self._start_btn.setObjectName("primary")
+        self._start_btn.setObjectName("dc-primary")
         self._start_btn.setMinimumHeight(40)
         self._start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._start_btn.clicked.connect(self._on_start)
 
         self._stop_btn = QPushButton("■  중지")
-        self._stop_btn.setObjectName("secondary")
+        self._stop_btn.setObjectName("dc-secondary")
         self._stop_btn.setMinimumHeight(36)
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._on_stop)
 
         self._clear_btn = QPushButton("초기화")
-        self._clear_btn.setObjectName("secondary")
+        self._clear_btn.setObjectName("dc-secondary")
         self._clear_btn.setMinimumHeight(36)
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.clicked.connect(self._on_clear)
 
         self._export_btn = QPushButton("CSV 내보내기")
-        self._export_btn.setObjectName("secondary")
+        self._export_btn.setObjectName("dc-secondary")
         self._export_btn.setMinimumHeight(36)
         self._export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._export_btn.setEnabled(False)
         self._export_btn.clicked.connect(self._on_export_csv)
 
-        outer.addWidget(self._start_btn)
-        outer.addWidget(self._stop_btn)
-        outer.addWidget(self._clear_btn)
-        outer.addWidget(self._export_btn)
+        btn_layout.addWidget(self._start_btn)
+        btn_layout.addWidget(self._stop_btn)
+        btn_layout.addWidget(self._clear_btn)
+        btn_layout.addWidget(self._export_btn)
+
+        main_layout.addWidget(btn_widget)
 
         return container
 
@@ -376,8 +462,8 @@ class DCBiasMeasurementPage(QWidget):
         header_row.addWidget(self._point_count_label)
         layout.addLayout(header_row)
 
-        # 테이블
-        self._table = QTableWidget(0, 1)
+        # 테이블 (셀 범위 선택 + Ctrl+C 복사 지원)
+        self._table = _CopyableTable(0, 1)
         self._table.setHorizontalHeaderLabels(["인가 전압 (V)"])
         self._table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Fixed
@@ -387,7 +473,8 @@ class DCBiasMeasurementPage(QWidget):
         self._table.verticalHeader().setDefaultSectionSize(28)
         self._table.verticalHeader().setVisible(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._table.setAlternatingRowColors(True)
         self._table.setStyleSheet(
             "QTableWidget { font-size: 12px; }"
@@ -534,12 +621,28 @@ class DCBiasMeasurementPage(QWidget):
         self._set_status(f"오류: {msg}", error=True)
 
     # ── 헬퍼 ─────────────────────────────────────────────────────
+    def _on_instrument_connect(self) -> None:
+        """계측기 연결 버튼 핸들러 — GPIB 스캔 후 드라이버를 로드한다."""
+        try:
+            from app.ui.dialogs.instrument_config import InstrumentConfigDialog
+            dialog = InstrumentConfigDialog(parent=self)
+            if dialog.exec():
+                cfg = dialog.get_config()
+                engine = MeasurementEngine(self.settings)
+                instrument = engine.load_instrument(cfg["model"], cfg["resource_name"])
+                self.set_instrument(instrument)
+        except Exception as exc:
+            self._set_status(f"계측기 연결 실패: {exc}", error=True)
+
     def set_instrument(self, instrument: BaseInstrument) -> None:
-        """외부(MainWindow)에서 연결된 계측기를 주입한다."""
+        """계측기 인스턴스를 주입한다."""
         self._instrument = instrument
         model = type(instrument).__name__
         self._instr_label.setText(f"계측기: {model} ●")
         self._instr_label.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        self._instr_status_label.setText(f"{model} ●")
+        self._instr_status_label.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        self.instrument_connected.emit(model)
 
     def _init_table_rows(self) -> None:
         """전압 포인트 수만큼 행을 미리 생성한다."""

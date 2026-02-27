@@ -45,6 +45,7 @@ class MeasurementPage(QWidget):
 
     back_requested = pyqtSignal()
     status_message = pyqtSignal(str)
+    instrument_connected = pyqtSignal(str)   # (model_name) → MainWindow 상태바 갱신
 
     # 테이블 열 순서
     _COLS = ["시간", "값", "단위", "주파수(Hz)", "DC Bias(V)", "상태"]
@@ -89,6 +90,8 @@ class MeasurementPage(QWidget):
         v_splitter.addWidget(top_widget)
         v_splitter.addWidget(self._build_history_panel())
         v_splitter.setSizes([360, 260])
+        v_splitter.setStretchFactor(0, 2)   # 측정 조건+실시간 패널: 창 확장 시 2배 비율
+        v_splitter.setStretchFactor(1, 1)   # 이력 패널: 창 확장 시 1배 비율
 
         root.addWidget(v_splitter)
 
@@ -118,11 +121,26 @@ class MeasurementPage(QWidget):
 
     def _build_condition_panel(self) -> QGroupBox:
         box = QGroupBox("측정 조건")
-        box.setFixedWidth(240)
+        box.setFixedWidth(260)   # 창 크기 변경 시에도 너비 고정
         form = QFormLayout(box)
         form.setSpacing(12)
         form.setContentsMargins(16, 24, 16, 16)
 
+        # ── 계측기 ──────────────────────────────────────────────
+        self._instr_status_label = QLabel("미연결")
+        self._instr_status_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        form.addRow("계측기:", self._instr_status_label)
+
+        self._instr_connect_btn = QPushButton("계측기 연결")
+        self._instr_connect_btn.setObjectName("secondary")
+        self._instr_connect_btn.setMinimumHeight(34)
+        self._instr_connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._instr_connect_btn.clicked.connect(self._on_instrument_connect)
+        form.addRow(self._instr_connect_btn)
+
+        form.addRow(QLabel(""))  # 여백
+
+        # ── 측정 조건 ────────────────────────────────────────────
         self._freq_spin = QDoubleSpinBox()
         self._freq_spin.setRange(20.0, 2_000_000.0)
         self._freq_spin.setValue(1000.0)
@@ -145,17 +163,7 @@ class MeasurementPage(QWidget):
         form.addRow("AC Level:", self._ac_spin)
         form.addRow("DC Bias:", self._bias_spin)
 
-        # 계측기 선택
-        form.addRow(QLabel(""))  # 여백
-        instr_label = QLabel("계측기")
-        instr_label.setObjectName("section-title")
-        form.addRow(instr_label)
-
-        self._instr_combo = QComboBox()
-        self._instr_combo.addItem("연결 안 됨")
-        form.addRow("모델:", self._instr_combo)
-
-        # 버튼
+        # ── 버튼 ─────────────────────────────────────────────────
         self._measure_btn = QPushButton("측정 시작")
         self._measure_btn.setObjectName("primary")
         self._measure_btn.setMinimumHeight(40)
@@ -323,10 +331,26 @@ class MeasurementPage(QWidget):
             self._measure_status_label.setStyleSheet("color: #DC2626; font-size: 11px;")
 
     # ── 헬퍼 ────────────────────────────────────────────────────
+    def _on_instrument_connect(self) -> None:
+        """계측기 연결 버튼 핸들러."""
+        try:
+            from app.ui.dialogs.instrument_config import InstrumentConfigDialog
+            dialog = InstrumentConfigDialog(parent=self)
+            if dialog.exec():
+                cfg = dialog.get_config()
+                engine = MeasurementEngine(self.settings)
+                instrument = engine.load_instrument(cfg["model"], cfg["resource_name"])
+                self.set_instrument(instrument)
+        except Exception as exc:
+            self._measure_status_label.setText(f"계측기 연결 실패: {exc}")
+            self._measure_status_label.setStyleSheet("color: #DC2626; font-size: 11px;")
+
     def set_instrument(self, instrument: BaseInstrument) -> None:
+        model = type(instrument).__name__
         self._instrument = instrument
-        self._instr_combo.clear()
-        self._instr_combo.addItem(type(instrument).__name__)
+        self._instr_status_label.setText(f"{model} ●")
+        self._instr_status_label.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        self.instrument_connected.emit(model)
 
     def _add_history_row(self, results: list) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

@@ -23,7 +23,8 @@ class LoginDialog(QDialog):
         self.username: str = ""
 
         self.setWindowTitle("MLCC Data Collector — 로그인")
-        self.setFixedSize(400, 340)
+        self.setMinimumSize(960, 640)
+        self.resize(1200, 760)
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
         )
@@ -37,38 +38,55 @@ class LoginDialog(QDialog):
         # ── 카드 컨테이너 (중앙 정렬) ──────────────────────────────
         card = QWidget()
         card.setObjectName("card")
+        card.setFixedWidth(480)   # 창 크기와 무관하게 고정
         card.setStyleSheet(
             "QWidget#card {"
             "  background: white;"
-            "  border-radius: 12px;"
+            "  border-radius: 14px;"
             "  border: 1px solid #E2E8F0;"
             "}"
         )
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(36, 36, 36, 36)
-        card_layout.setSpacing(16)
+        card_layout.setContentsMargins(44, 44, 44, 44)
+        card_layout.setSpacing(18)
 
         # 타이틀
         title = QLabel("MLCC Data Collector")
-        title_font = QFont("Segoe UI", 16)
+        title_font = QFont("Segoe UI", 20)
         title_font.setBold(True)
         title.setFont(title_font)
         title.setStyleSheet("color: #1E3A5F;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         sub = QLabel("계정으로 로그인하세요")
-        sub.setStyleSheet("color: #64748B; font-size: 12px;")
+        sub.setStyleSheet("color: #64748B; font-size: 15px;")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # 입력 필드
+        _input_style = (
+            "QLineEdit {"
+            "  font-size: 15px;"
+            "  border: 1.5px solid #1E3A5F;"
+            "  border-radius: 6px;"
+            "  padding: 8px 12px;"
+            "  background: #FFFFFF;"
+            "  color: #1E293B;"
+            "}"
+            "QLineEdit:focus {"
+            "  border: 2px solid #2D5F9A;"
+            "}"
+        )
+
         self._username_edit = QLineEdit()
         self._username_edit.setPlaceholderText("사용자명")
-        self._username_edit.setMinimumHeight(40)
+        self._username_edit.setMinimumHeight(48)
+        self._username_edit.setStyleSheet(_input_style)
 
         self._password_edit = QLineEdit()
         self._password_edit.setPlaceholderText("비밀번호")
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password_edit.setMinimumHeight(40)
+        self._password_edit.setMinimumHeight(48)
+        self._password_edit.setStyleSheet(_input_style)
         self._password_edit.returnPressed.connect(self._on_login)
 
         # 오류 메시지
@@ -76,12 +94,26 @@ class LoginDialog(QDialog):
         self._error_label.setObjectName("error-label")
         self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._error_label.setWordWrap(True)
+        self._error_label.setStyleSheet("color: #DC2626; font-size: 13px;")
         self._error_label.hide()
 
         # 로그인 버튼
         self._login_btn = QPushButton("로그인")
         self._login_btn.setObjectName("primary")
-        self._login_btn.setMinimumHeight(42)
+        self._login_btn.setMinimumHeight(50)
+        self._login_btn.setStyleSheet(
+            "QPushButton#primary {"
+            "  background: #1E3A5F;"
+            "  color: #FFFFFF;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  font-size: 16px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton#primary:hover { background: #2D5F9A; }"
+            "QPushButton#primary:pressed { background: #162D48; }"
+            "QPushButton#primary:disabled { background: #6B8FAD; }"
+        )
         self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._login_btn.clicked.connect(self._on_login)
 

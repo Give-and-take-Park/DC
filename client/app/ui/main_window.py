@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QStatusBar, QApplication,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont
 
 from app.config.settings import Settings
@@ -17,11 +17,14 @@ from app.ui.pages.dc_bias_page import DCBiasMeasurementPage
 class MainWindow(QMainWindow):
     """메인 윈도우 — 헤더 + QStackedWidget + 상태바"""
 
+    window_closed = pyqtSignal()   # 창이 닫힐 때 main.py 이벤트 루프에 통보
+
     def __init__(self, settings: Settings, api_client: APIClient, username: str = ""):
         super().__init__()
         self.settings = settings
         self.api_client = api_client
         self.username = username
+        self.is_logout: bool = False   # 로그아웃으로 닫힌 경우 True
         self._measurement_pages: dict[str, int] = {}  # characteristic → stack index
 
         self.setWindowTitle("MLCC Data Collector")
@@ -67,11 +70,11 @@ class MainWindow(QMainWindow):
     def _build_header(self) -> QWidget:
         header = QWidget()
         header.setObjectName("header")
-        header.setFixedHeight(56)
+        header.setMinimumHeight(72)
 
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(16)
+        layout.setContentsMargins(28, 0, 28, 0)
+        layout.setSpacing(20)
 
         # 타이틀 (좌)
         title_label = QLabel("MLCC Data Collector")
@@ -79,13 +82,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
 
         layout.addStretch()
-
-        # 계측기 연결 버튼 (중)
-        self._instr_btn = QPushButton("계측기 연결")
-        self._instr_btn.setObjectName("header-btn")
-        self._instr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._instr_btn.clicked.connect(self._on_instrument_connect)
-        layout.addWidget(self._instr_btn)
 
         layout.addStretch()
 
@@ -107,13 +103,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
 
         self._server_status_label = QLabel("● 서버: 확인 중")
-        self._server_status_label.setStyleSheet("color: #CBD5E1; font-size: 11px;")
+        self._server_status_label.setStyleSheet("color: #CBD5E1; font-size: 13px;")
 
         self._gpib_status_label = QLabel("● GPIB: 미연결")
-        self._gpib_status_label.setStyleSheet("color: #CBD5E1; font-size: 11px;")
+        self._gpib_status_label.setStyleSheet("color: #CBD5E1; font-size: 13px;")
 
         self._session_label = QLabel("")
-        self._session_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self._session_label.setStyleSheet("color: #94A3B8; font-size: 13px;")
 
         status_bar.addWidget(self._server_status_label)
         status_bar.addWidget(self._gpib_status_label)
@@ -137,6 +133,7 @@ class MainWindow(QMainWindow):
                 )
             page.back_requested.connect(self._navigate_home)
             page.status_message.connect(self.statusBar().showMessage)
+            page.instrument_connected.connect(self._on_instrument_connected)
             idx = self._stack.addWidget(page)
             self._measurement_pages[characteristic] = idx
 
@@ -146,29 +143,22 @@ class MainWindow(QMainWindow):
     def _navigate_home(self) -> None:
         self._stack.setCurrentIndex(0)
 
-    # ── 계측기 연결 ──────────────────────────────────────────────
-    def _on_instrument_connect(self) -> None:
-        try:
-            from app.ui.dialogs.instrument_config import InstrumentConfigDialog
-            from app.core.measurement_engine import MeasurementEngine
-            dialog = InstrumentConfigDialog(parent=self)
-            if dialog.exec():
-                cfg = dialog.get_config()
-                engine = MeasurementEngine(self.settings)
-                instrument = engine.load_instrument(cfg["model"], cfg["resource_name"])
-                model_name = cfg["model"]
-                self._instr_btn.setText(f"{model_name} ●")
-                self._gpib_status_label.setText(f"● GPIB: {model_name}")
-                self._gpib_status_label.setStyleSheet("color: #4ADE80; font-size: 11px;")
-                # 현재 열린 측정 페이지에 계측기 전달
-                current = self._stack.currentWidget()
-                if isinstance(current, (MeasurementPage, DCBiasMeasurementPage)):
-                    current.set_instrument(instrument)
-        except Exception as exc:
-            self.statusBar().showMessage(f"계측기 연결 실패: {exc}", 5000)
+    # ── 계측기 연결 상태 갱신 ────────────────────────────────────
+    @pyqtSlot(str)
+    def _on_instrument_connected(self, model_name: str) -> None:
+        """측정 페이지에서 계측기 연결 성공 시 상태바를 갱신한다."""
+        self._gpib_status_label.setText(f"● GPIB: {model_name}")
+        self._gpib_status_label.setStyleSheet("color: #4ADE80; font-size: 13px;")
+
+    # ── 창 닫기 이벤트 ───────────────────────────────────────────
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._status_timer.stop()
+        self.window_closed.emit()
+        super().closeEvent(event)
 
     # ── 로그아웃 ─────────────────────────────────────────────────
     def _on_logout(self) -> None:
+        self.is_logout = True
         self.close()
 
     # ── 상태 타이머 ──────────────────────────────────────────────
@@ -183,7 +173,7 @@ class MainWindow(QMainWindow):
         ok = self.api_client.check_server()
         if ok:
             self._server_status_label.setText("● 서버: 연결됨")
-            self._server_status_label.setStyleSheet("color: #4ADE80; font-size: 11px;")
+            self._server_status_label.setStyleSheet("color: #4ADE80; font-size: 13px;")
         else:
             self._server_status_label.setText("● 서버: 오프라인")
-            self._server_status_label.setStyleSheet("color: #F87171; font-size: 11px;")
+            self._server_status_label.setStyleSheet("color: #F87171; font-size: 13px;")
