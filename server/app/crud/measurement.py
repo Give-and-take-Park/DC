@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from app.models.measurement import MeasurementSession, RawMeasurement, MlccMeasurement
+from app.models.measurement import MeasurementSession, ModuleType, RawMeasurement, MlccMeasurement
 
 
 def create_session(
@@ -9,9 +9,11 @@ def create_session(
     client_id: str,
     session_name: Optional[str],
     operator: Optional[str],
+    module_type: Optional[ModuleType] = None,
 ) -> MeasurementSession:
     obj = MeasurementSession(
         client_id=client_id,
+        module_type=module_type or ModuleType.dc_bias,
         session_name=session_name,
         operator=operator,
     )

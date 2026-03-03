@@ -28,6 +28,7 @@ class MeasurementService:
         session = crud_measurement.create_session(
             self.db,
             client_id=payload.client_id,
+            module_type=payload.module_type,
             session_name=payload.session_name,
             operator=payload.operator,
         )
@@ -62,5 +63,6 @@ class MeasurementService:
         return MeasurementSessionOut(
             session_id=session.id,
             client_id=payload.client_id,
+            module_type=session.module_type,
             measurements_saved=len(payload.measurements),
         )

@@ -85,7 +85,7 @@ QPushButton#measurement-card {
 }
 
 QPushButton#measurement-card:hover {
-    border: 2.5px solid #2563EB;
+    border: 2.5px solid #1E3A5F;
     background: #F0F6FF;
 }
 

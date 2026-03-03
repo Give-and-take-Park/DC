@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password_hash: str = ""  # hash_password()로 생성한 값을 .env에 설정
 
+    # 파일 업로드
+    upload_dir: str = "uploads"  # 상대 경로 또는 절대 경로
+
     @property
     def database_url(self) -> str:
         return (

@@ -22,12 +22,14 @@ CREATE TABLE IF NOT EXISTS instruments (
 CREATE TABLE IF NOT EXISTS measurement_sessions (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     client_id    VARCHAR(100) NOT NULL,
+    module_type  ENUM('dc_bias','halt_8585') NOT NULL DEFAULT 'dc_bias',
     session_name VARCHAR(200),
     started_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ended_at     DATETIME,
     operator     VARCHAR(100),
     notes        TEXT,
-    INDEX idx_client_id (client_id)
+    INDEX idx_client_id  (client_id),
+    INDEX idx_module_type (module_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 계측기 원시 GPIB 응답 (감사/재처리용)
@@ -62,4 +64,18 @@ CREATE TABLE IF NOT EXISTS mlcc_measurements (
     FOREIGN KEY (raw_measurement_id) REFERENCES raw_measurements(id),
     FOREIGN KEY (session_id)         REFERENCES measurement_sessions(id),
     FOREIGN KEY (instrument_id)      REFERENCES instruments(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 광학 설계분석 이미지 업로드 기록
+CREATE TABLE IF NOT EXISTS optical_analyses (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    operator          VARCHAR(100),
+    session_name      VARCHAR(200),
+    original_filename VARCHAR(255) NOT NULL,   -- 원본 파일명
+    stored_filename   VARCHAR(255) NOT NULL,   -- UUID 기반 서버 저장명
+    file_size         BIGINT,                  -- bytes
+    description       TEXT,
+    uploaded_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_operator    (operator),
+    INDEX idx_uploaded_at (uploaded_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

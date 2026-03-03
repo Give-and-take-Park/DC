@@ -12,4 +12,4 @@ class Base(DeclarativeBase):
 
 
 # Alembic autogenerate가 모든 모델을 탐색할 수 있도록 여기서 import
-from app.models import measurement, instrument, user  # noqa: E402, F401
+from app.models import measurement, instrument, user, optical  # noqa: E402, F401

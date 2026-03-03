@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -167,16 +168,39 @@ class _SweepWorker(QObject):
                 pass  # 정리 실패는 무시 (이미 예외 처리 완료)
 
 
-# ── 복사 지원 테이블 ─────────────────────────────────────────────
+# ── 복사·열 삭제 지원 테이블 ─────────────────────────────────────
 class _CopyableTable(QTableWidget):
     """마우스 드래그·Shift+Click·Ctrl+Click으로 셀 범위 선택 후
-    Ctrl+C로 클립보드에 탭 구분 텍스트(Excel 호환)를 복사하는 테이블."""
+    Ctrl+C로 클립보드에 탭 구분 텍스트(Excel 호환)를 복사하는 테이블.
+    우클릭 컨텍스트 메뉴 또는 Delete 키로 측정 열을 삭제할 수 있다."""
+
+    column_delete_requested = pyqtSignal(int)   # 삭제 요청 열 인덱스
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.matches(QKeySequence.StandardKey.Copy):
             self._copy_selection()
+        elif event.key() == Qt.Key.Key_Delete:
+            # 선택된 셀 중 col > 0 인 열을 역순(큰 인덱스 먼저)으로 삭제 요청
+            cols = sorted(
+                {idx.column() for idx in self.selectedIndexes() if idx.column() > 0},
+                reverse=True,
+            )
+            for c in cols:
+                self.column_delete_requested.emit(c)
         else:
             super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        col = self.columnAt(event.pos().x())
+        if col <= 0:
+            super().contextMenuEvent(event)
+            return
+        menu = QMenu(self)
+        header_item = self.horizontalHeaderItem(col)
+        col_name = header_item.text() if header_item else f"{col}열"
+        del_action = menu.addAction(f"'{col_name}' 삭제")
+        if menu.exec(event.globalPos()) == del_action:
+            self.column_delete_requested.emit(col)
 
     def _copy_selection(self) -> None:
         ranges = self.selectedRanges()
@@ -250,7 +274,7 @@ class DCBiasMeasurementPage(QWidget):
         layout.setContentsMargins(16, 0, 16, 0)
 
         back_btn = QPushButton("← 홈으로")
-        back_btn.setObjectName("secondary")
+        back_btn.setObjectName("dc-secondary")
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.clicked.connect(self.back_requested)
 
@@ -305,7 +329,7 @@ class DCBiasMeasurementPage(QWidget):
         instr_form.addRow("상태:", self._instr_status_label)
 
         self._instr_connect_btn = QPushButton("계측기 연결")
-        self._instr_connect_btn.setObjectName("secondary")
+        self._instr_connect_btn.setObjectName("dc-secondary")
         self._instr_connect_btn.setMinimumHeight(34)
         self._instr_connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._instr_connect_btn.clicked.connect(self._on_instrument_connect)
@@ -480,6 +504,7 @@ class DCBiasMeasurementPage(QWidget):
             "QTableWidget { font-size: 12px; }"
             "QTableWidget::item { padding: 2px 8px; }"
         )
+        self._table.column_delete_requested.connect(self._on_delete_column)
         layout.addWidget(self._table)
 
         return panel
@@ -562,6 +587,22 @@ class DCBiasMeasurementPage(QWidget):
         self._progress_bar.hide()
         self._export_btn.setEnabled(False)
         self._set_status("")
+
+    def _on_delete_column(self, col: int) -> None:
+        """지정 측정 열을 삭제하고 헤더를 재번호 매긴다."""
+        if col == 0 or (self._thread and self._thread.isRunning()):
+            return
+        self._table.removeColumn(col)
+        # 남은 측정 열(col >= 1) 헤더를 1차, 2차, ... 순으로 재번호
+        for i in range(1, self._table.columnCount()):
+            self._table.setHorizontalHeaderItem(
+                i, QTableWidgetItem(f"{i}차 측정 (F)")
+            )
+        self._sweep_count = self._table.columnCount() - 1
+        self._count_label.setText(f"측정 횟수: {self._sweep_count}회")
+        if self._sweep_count == 0:
+            self._export_btn.setEnabled(False)
+            self._point_count_label.setText("")
 
     def _on_export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

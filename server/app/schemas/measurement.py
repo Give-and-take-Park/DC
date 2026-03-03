@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-from app.models.measurement import CharacteristicType
+from app.models.measurement import CharacteristicType, ModuleType
 
 
 class MeasurementIn(BaseModel):
@@ -22,6 +22,7 @@ class InstrumentRef(BaseModel):
 
 class MeasurementSessionCreate(BaseModel):
     client_id: str
+    module_type: ModuleType = ModuleType.dc_bias   # 측정 모듈 구분
     session_name: Optional[str] = None
     operator: Optional[str] = None
     instrument: InstrumentRef
@@ -46,4 +47,5 @@ class MlccMeasurementOut(BaseModel):
 class MeasurementSessionOut(BaseModel):
     session_id: int
     client_id: str
+    module_type: ModuleType
     measurements_saved: int

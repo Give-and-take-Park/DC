@@ -61,20 +61,33 @@ main.py → LoginDialog → JWT 획득
                ↓
           MainWindow (QStackedWidget)
                ↓ 카드 클릭
-     HomePage / MeasurementPage / DCBiasMeasurementPage
-               ↓ 측정 시작 (QThread)
+     ┌─────────────────────────────────────────────────────┐
+     │ HomePage (3종 카드)                                  │
+     │  ├─ DC-bias          → DCBiasMeasurementPage        │
+     │  ├─ HALT / 8585      → MeasurementPage              │
+     │  └─ 광학 설계분석    → MeasurementPage (이미지 업로드) │
+     └─────────────────────────────────────────────────────┘
+               ↓ (DC-bias / HALT·8585) 측정 시작 (QThread)
      MeasurementEngine → InstrumentRegistry → Driver → GPIB 계측기
                                                             ↓
-                                                       APIClient (JWT 헤더 포함) → Server
+                                                    APIClient (JWT 헤더)
+                                                            ↓
+                                                          Server
+
+               ↓ (광학 설계분석) 이미지 파일 선택 → multipart 업로드
+                                                    APIClient → POST /optical/upload
 
 [서버]
-POST /api/v1/auth/login → JWT 발급
-POST /api/v1/measurements → MeasurementService → CRUD → SQLAlchemy → MariaDB
-GET  /                   → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
+POST /api/v1/auth/login     → JWT 발급
+POST /api/v1/measurements   → MeasurementService → CRUD → MariaDB
+POST /api/v1/optical/upload → 이미지 저장(UUID 파일명) + optical_analyses 레코드 생성
+GET  /api/v1/optical/records → 업로드 이력 조회
+GET  /                       → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 ```
 
 - **단위 정규화**: `server/app/services/normalizer.py`에서 수신값을 표준 단위(F, Ω, V)로 변환 후 저장
 - **측정 함수**: E4980A는 `CPD` 모드(Cp + 손실계수 D) 사용 — MLCC DC Bias 평가 표준
+- **파일 업로드 경로**: `{UPLOAD_DIR}/optical/{uuid}.{ext}` (서버 로컬 디스크)
 
 ## 계측기 드라이버 추가
 
@@ -93,12 +106,13 @@ GET  /                   → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 → { "access_token": "...", "token_type": "bearer", "username": "string" }
 ```
 
-### 측정 데이터
+### GPIB 측정 데이터 (DC-bias / HALT·8585 모듈 공용)
 `POST /api/v1/measurements` — `MeasurementSessionCreate`
 
 ```json
 {
   "client_id": "string",
+  "module_type": "dc_bias | halt_8585",
   "session_name": "string (optional)",
   "operator": "string (optional)",
   "instrument": {
@@ -120,6 +134,24 @@ GET  /                   → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 }
 ```
 
+### 광학 설계분석 이미지 업로드
+`POST /api/v1/optical/upload` — multipart/form-data
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `file` | File | 이미지 파일 (JPEG/PNG/BMP/TIFF/WebP, 최대 50 MB) |
+| `operator` | Form (optional) | 작업자명 |
+| `session_name` | Form (optional) | 세션명 |
+| `description` | Form (optional) | 설명 |
+
+```json
+→ { "id": 1, "original_filename": "sample.jpg", "file_size": 204800,
+    "uploaded_at": "2026-02-28T10:00:00Z", "status": "uploaded" }
+```
+
+`GET /api/v1/optical/records` — 이미지 업로드 이력 조회
+- Query params: `page` (기본 1), `size` (기본 20), `operator` (optional)
+
 ## 환경 변수
 
 `server/.env`
@@ -139,6 +171,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES=480
 # 초기 관리자 계정 (DB Users 테이블이 비어있을 때 사용)
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=         # bcrypt 해시값 (위 명령어로 생성)
+
+# 파일 업로드 디렉터리 (광학 설계분석 이미지 저장 경로)
+UPLOAD_DIR=uploads           # 상대 경로 또는 절대 경로
 ```
 
 `client/.env`
