@@ -85,11 +85,20 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # 사용자 이름 + 로그아웃 (우)
+        # 사용자 이름 (우)
         user_label = QLabel(self.username)
         user_label.setObjectName("header-instrument")
         layout.addWidget(user_label)
 
+        # 홈으로 버튼 — 측정 페이지 진입 시에만 표시
+        self._home_btn = QPushButton("🏠  홈으로")
+        self._home_btn.setObjectName("header-btn")
+        self._home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._home_btn.clicked.connect(self._navigate_home)
+        self._home_btn.setVisible(False)
+        layout.addWidget(self._home_btn)
+
+        # 로그아웃 버튼 (우)
         logout_btn = QPushButton("로그아웃")
         logout_btn.setObjectName("header-btn")
         logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -138,10 +147,17 @@ class MainWindow(QMainWindow):
             self._measurement_pages[characteristic] = idx
 
         self._stack.setCurrentIndex(self._measurement_pages[characteristic])
+        self._home_btn.setVisible(True)
+
+        # DC-bias 페이지 진입 시 GPIB 자동 스캔
+        if characteristic == "DC_BIAS":
+            page = self._stack.widget(self._measurement_pages[characteristic])
+            QTimer.singleShot(0, page.start_gpib_scan)
 
     @pyqtSlot()
     def _navigate_home(self) -> None:
         self._stack.setCurrentIndex(0)
+        self._home_btn.setVisible(False)
 
     # ── 계측기 연결 상태 갱신 ────────────────────────────────────
     @pyqtSlot(str)

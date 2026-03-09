@@ -1,25 +1,28 @@
-"""DC Bias 특성 측정 페이지
+"""DC Bias 특성 측정 페이지 (Cp-D / Cs-D 모드)
 
 레이아웃:
-┌─────────────────────┬──────────────────────────────────────────┐
-│ 측정 조건 (280px)   │  측정 결과 테이블                        │
-│                     │                                          │
-│ 주파수: 1000 Hz     │  인가전압(V) │ 1차측정(F) │ 2차측정(F)  │
-│ AC Level: 1.0 V     │  0.0         │ 100.23 nF  │ 99.87 nF   │
-│ 시작전압: 0.0 V     │  1.0         │  98.45 nF  │ 98.12 nF   │
-│ 종료전압: 5.0 V     │  ...         │  ...       │ ...        │
-│ 전압스텝: 1.0 V     │                                          │
-│ 지연시간: 100 ms    │                                          │
-│                     │                                          │
-│ 측정 횟수: 2회      │                                          │
-│                     │                                          │
-│ [측정 시작]         │                                          │
-│ [중지]              │                                          │
-│ [초기화]            │                                          │
-│ [CSV 내보내기]      │                                          │
-│                     │                                          │
-│ [====     ] 3/6     │                                          │
-└─────────────────────┴──────────────────────────────────────────┘
+┌───────────────────────┬──────────────────────────────────────────────────────┐
+│ 조건 패널 (230px)     │ 측정 결과                                             │
+│                       │                                                      │
+│ ┌ 계측기 ──────────┐  │  No. │ 전압 인가 조건 │ CHIP 1 │ CHIP 2(추가됨) │  │
+│ │ GPIB: [combo][연결][●] │  │      │ AC(V)▼ DC(V)▼ │ Cp  DF │ Cp  DF │       │
+│ └──────────────────┘  │  1   │               │        │        │           │
+│ ┌ 측정 조건 ────────┐  │  2   │               │        │        │           │
+│ │ 측정 모드 [combo] │  │  …                                                   │
+│ │ 주파수    [combo] │  │                                                      │
+│ │ 유지시간  [combo] │  │                                                      │
+│ │ LOT no.   [text ] │  │                                                      │
+│ └──────────────────┘  │                                                      │
+│ [▶ 측정 시작]         │                                                      │
+│ [■ 중지  ]            │                                                      │
+│ [초기화  ]            │                                                      │
+│ [CSV 내보내기]        │                                                      │
+└───────────────────────┴──────────────────────────────────────────────────────┘
+
+측정 흐름:
+  1차 '측정 시작' → CHIP 1 열로 모든 데이터 행 AC/DC 조건 순차 측정
+  2차 '측정 시작' → CHIP 2 열 자동 추가 → 모든 행 측정
+  3차 이후 동일 패턴
 """
 
 import csv
@@ -27,26 +30,27 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QKeySequence
+from PyQt6.QtCore import QObject, QPoint, QRegularExpression, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QApplication,
-    QDoubleSpinBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
-    QSpinBox,
     QSplitter,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -57,59 +61,82 @@ from app.core.measurement_engine import MeasurementEngine
 from app.instruments.base import BaseInstrument
 from app.instruments.drivers.lcr_meter.base_lcr import BaseLCRMeter
 
+# ── 상수 ──────────────────────────────────────────────────────────────────────
+_MODE_OPTIONS  = ["Cp-D", "Cs-D"]
+_FREQ_OPTIONS  = ["100", "200", "1K", "100K", "직접 입력"]
+_HOLD_OPTIONS  = ["1", "2", "3", "60", "직접 입력"]
+_AC_DC_PRESETS = ["0", "1", "2"]
+_CUSTOM_LABEL  = "직접 입력"
 
-# ── 전압 포인트 계산 (numpy 미사용) ─────────────────────────────
-def _compute_voltage_points(start_v: float, end_v: float, step_v: float) -> List[float]:
-    """start_v → end_v 사이를 step_v 간격으로 나눈 전압 목록 반환."""
-    if step_v <= 0:
-        return [start_v]
-    points: List[float] = []
-    v = start_v
-    # 부동소수점 오차 허용(스텝의 백만분의 일)
-    tolerance = step_v * 1e-6
-    while v <= end_v + tolerance:
-        points.append(round(v, 6))
-        v = round(v + step_v, 6)
-    return points
+_HEADER_ROWS = 2     # 테이블 상단 2행이 헤더
+_INIT_ROWS   = 5     # 초기 데이터 행 수
+
+# 고정 컬럼 인덱스
+_COL_NO      = 0     # No.
+_COL_AC      = 1     # AC(V)
+_COL_DC      = 2     # DC(V)
+_FIXED_COLS  = 3     # No. + AC + DC
 
 
-def _fmt_cap(value_f: float) -> str:
-    """정전용량 값을 읽기 좋은 단위 문자열로 변환."""
-    if value_f != value_f:          # NaN
+# ── 0 이상 실수 전용 델리게이트 ────────────────────────────────────────────────
+class _NonNegativeDelegate(QStyledItemDelegate):
+    """데이터 셀 편집 시 0 이상의 실수만 입력 허용."""
+
+    _PATTERN = QRegularExpression(r"^\d*\.?\d*$")  # 음수·문자 불허
+
+    def createEditor(self, parent, option, index):  # type: ignore[override]
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setValidator(QRegularExpressionValidator(self._PATTERN, editor))
+        return editor
+
+
+# ── 헤더 셀 아이템 생성 ───────────────────────────────────────────────────────
+def _make_header_item(text: str) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+    item.setBackground(QColor("#EFF6FF"))
+    item.setForeground(QColor("#1E3A5F"))
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    f = QFont("Segoe UI", 9)
+    f.setBold(True)
+    item.setFont(f)
+    return item
+
+
+# ── 정전용량 포맷 헬퍼 ────────────────────────────────────────────────────────
+def _fmt_cap(v: float) -> str:
+    if v != v:
         return "N/A"
-    abs_v = abs(value_f)
-    if abs_v >= 1e-3:
-        return f"{value_f * 1e3:.4f} mF"
-    if abs_v >= 1e-6:
-        return f"{value_f * 1e6:.4f} µF"
-    if abs_v >= 1e-9:
-        return f"{value_f * 1e9:.4f} nF"
-    return f"{value_f * 1e12:.4f} pF"
+    a = abs(v)
+    if a >= 1e-3:  return f"{v * 1e3:.4f} mF"
+    if a >= 1e-6:  return f"{v * 1e6:.4f} µF"
+    if a >= 1e-9:  return f"{v * 1e9:.4f} nF"
+    return f"{v * 1e12:.4f} pF"
 
 
-# ── 측정 워커 ────────────────────────────────────────────────────
-class _SweepWorker(QObject):
-    """DC Bias 전압 스윕을 별도 QThread에서 실행하는 워커."""
+# ── 측정 워커 (행 순차 스윕) ──────────────────────────────────────────────────
+class _MeasurementWorker(QObject):
+    """AC/DC 조건 목록을 받아 행 순서대로 측정하는 워커.
+    각 행마다 configure(ac_level, dc_bias) → hold → measure."""
 
-    row_done = pyqtSignal(int, float, float)   # (row_index, voltage_V, capacitance_F)
+    row_done = pyqtSignal(int, float, float)   # (row_idx 0-based, cp_F, df)
     finished = pyqtSignal()
-    error = pyqtSignal(str)
+    error    = pyqtSignal(str)
 
     def __init__(
         self,
         instrument: BaseInstrument,
-        voltage_points: List[float],
         frequency: float,
-        ac_level: float,
-        delay_ms: int,
+        conditions: List[tuple],   # [(ac_v, dc_v), …] per data row
+        hold_s: float,
     ):
         super().__init__()
-        self._instrument = instrument
-        self._voltage_points = voltage_points
-        self._frequency = frequency
-        self._ac_level = ac_level
-        self._delay_ms = delay_ms
-        self._running = True
+        self._instrument  = instrument
+        self._frequency   = frequency
+        self._conditions  = conditions
+        self._hold_s      = hold_s
+        self._running     = True
 
     def stop(self) -> None:
         self._running = False
@@ -117,40 +144,26 @@ class _SweepWorker(QObject):
     @pyqtSlot()
     def run(self) -> None:
         try:
-            # ── 1. 측정 함수·주파수·AC 레벨·DC 바이어스 활성화 ──────
-            # configure() 내부에서 아래 GPIB 커맨드가 순서대로 전송됨:
-            #   FUNC:IMP:TYPE CPRP  → Cp-Rp 측정 모드
-            #   FREQ <freq>         → 측정 주파수
-            #   VOLT <ac_level>     → AC 신호 레벨
-            #   BIAS:VOLT 0         → 초기 DC 바이어스 0 V
-            #   BIAS:STATE ON       → DC 바이어스 출력 활성화 (이 명령이 핵심)
-            self._instrument.configure(
-                frequency=self._frequency,
-                ac_level=self._ac_level,
-                dc_bias=0.0,            # 스윕 시작 전 0 V 에서 activate
-            )
-
-            # ── 2. 전압 포인트별 측정 루프 ───────────────────────────
-            for idx, voltage in enumerate(self._voltage_points):
+            for row_idx, (ac_v, dc_v) in enumerate(self._conditions):
                 if not self._running:
                     break
-
-                # DC 바이어스 전압 인가 (BIAS:STATE는 이미 ON)
-                self._instrument.set_dc_bias(voltage)
-
-                # 지연: 계측기 내부 측정 버퍼가 새 바이어스 조건으로
-                # 갱신될 때까지 대기 (최소 1 측정 주기 이상이어야 함)
-                if self._delay_ms > 0:
-                    time.sleep(self._delay_ms / 1000.0)
-
-                # 최신 측정값 수집 (FETC? — 연속 트리거 모드)
+                self._instrument.configure(
+                    frequency=self._frequency,
+                    ac_level=ac_v,
+                    dc_bias=dc_v,
+                )
+                if self._hold_s > 0:
+                    time.sleep(self._hold_s)
                 results = self._instrument.measure()
-                capacitance = next(
+                cp = next(
                     (r.value for r in results if r.characteristic.value == "capacitance"),
                     float("nan"),
                 )
-
-                self.row_done.emit(idx, voltage, capacitance)
+                df = next(
+                    (r.value for r in results if r.characteristic.value in ("df", "d")),
+                    float("nan"),
+                )
+                self.row_done.emit(row_idx, cp, df)
 
             self.finished.emit()
 
@@ -158,76 +171,244 @@ class _SweepWorker(QObject):
             self.error.emit(str(exc))
 
         finally:
-            # ── 3. 스윕 종료·중단 공통 — DC 바이어스 해제 ─────────
-            # 정상 완료, 사용자 중지, 예외 발생 모두 여기서 처리
-            # DUT 보호를 위해 반드시 0 V 복귀 후 BIAS:STATE OFF
             try:
                 if isinstance(self._instrument, BaseLCRMeter):
                     self._instrument.disable_dc_bias()
             except Exception:
-                pass  # 정리 실패는 무시 (이미 예외 처리 완료)
+                pass
 
 
-# ── 복사·열 삭제 지원 테이블 ─────────────────────────────────────
-class _CopyableTable(QTableWidget):
-    """마우스 드래그·Shift+Click·Ctrl+Click으로 셀 범위 선택 후
-    Ctrl+C로 클립보드에 탭 구분 텍스트(Excel 호환)를 복사하는 테이블.
-    우클릭 컨텍스트 메뉴 또는 Delete 키로 측정 열을 삭제할 수 있다."""
+# ── 다중 레벨 헤더 측정 결과 테이블 (동적 CHIP 열) ───────────────────────────
+class _ResultTable(QTableWidget):
+    """
+    2행 헤더 + 직접 편집 + Enter 이동/행 추가 + Ctrl+C 복사.
+    CHIP 열은 측정 시작 때마다 동적으로 추가된다.
 
-    column_delete_requested = pyqtSignal(int)   # 삭제 요청 열 인덱스
+    구조:
+      행 0 : No.*(2행 span) | 전압 인가 조건*(2열 span) | CHIP 1*(2열 span) | …
+      행 1 : (merged)       | AC(V)▼  | DC(V)▼         | Cp  | DF | …
+      행 2+: 데이터
+    """
 
+    def __init__(self, parent: Optional[QWidget] = None):
+        # 초기 컬럼: No., AC(V), DC(V), CHIP1-Cp, CHIP1-DF = 5열
+        super().__init__(0, _FIXED_COLS + 2, parent)
+        self._chip_count = 1
+        self._setup_table()
+        self._build_header_rows()
+        for _ in range(_INIT_ROWS):
+            self.append_data_row()
+
+    # ── 테이블 초기 설정 ─────────────────────────────────────────────
+    def _setup_table(self) -> None:
+        self.horizontalHeader().setVisible(False)
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked
+            | QTableWidget.EditTrigger.AnyKeyPressed
+        )
+        self.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        self.setGridStyle(Qt.PenStyle.SolidLine)
+        self.setStyleSheet(
+            "QTableWidget { font-size: 12px; gridline-color: #CBD5E1; }"
+            "QTableWidget::item { padding: 2px 6px; }"
+            "QTableWidget::item:selected { background: #DBEAFE; color: #1E3A5F; }"
+        )
+        self.setColumnWidth(_COL_NO, 45)
+        self.setColumnWidth(_COL_AC, 72)
+        self.setColumnWidth(_COL_DC, 72)
+        self._set_chip_col_widths(1)
+        self.setItemDelegate(_NonNegativeDelegate(self))
+        self.cellClicked.connect(self._on_cell_clicked)
+
+    def _set_chip_col_widths(self, chip_num: int) -> None:
+        col_cp = self.chip_col_start(chip_num)
+        if col_cp < self.columnCount():
+            self.setColumnWidth(col_cp,     90)   # Cp
+        if col_cp + 1 < self.columnCount():
+            self.setColumnWidth(col_cp + 1, 75)   # DF
+
+    # ── 헤더 행 구성 ─────────────────────────────────────────────────
+    def _build_header_rows(self) -> None:
+        self.insertRow(0)
+        self.insertRow(1)
+        self.setRowHeight(0, 30)
+        self.setRowHeight(1, 28)
+
+        # 행 0: No.(2행 span), 전압 인가 조건(2열 span), CHIP 1(2열 span)
+        self.setItem(0, _COL_NO, _make_header_item("No."))
+        self.setSpan(0, _COL_NO, 2, 1)
+
+        self.setItem(0, _COL_AC, _make_header_item("전압 인가 조건"))
+        self.setSpan(0, _COL_AC, 1, 2)
+
+        self.setItem(0, _FIXED_COLS, _make_header_item("CHIP 1"))
+        self.setSpan(0, _FIXED_COLS, 1, 2)
+
+        # 행 1: AC(V)▼, DC(V)▼, Cp, DF  (setCellWidget 미사용 — 에디터 충돌 방지)
+        for col, label in ((_COL_AC, "AC(V) ▼"), (_COL_DC, "DC(V) ▼")):
+            self.setItem(1, col, _make_header_item(label))
+
+        self.setItem(1, _FIXED_COLS,     _make_header_item("Cp"))
+        self.setItem(1, _FIXED_COLS + 1, _make_header_item("DF"))
+
+    # ── AC/DC 헤더 클릭 → 일괄 반영 메뉴 ────────────────────────────
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        """행 1의 AC/DC 헤더 셀 클릭 시 일괄 입력 메뉴를 띄운다."""
+        if row == 1 and col in (_COL_AC, _COL_DC):
+            rect = self.visualRect(self.model().index(row, col))
+            pos  = self.viewport().mapToGlobal(rect.bottomLeft())
+            self._show_fill_menu(col, pos)
+
+    def _show_fill_menu(self, col: int, pos: QPoint) -> None:
+        menu    = QMenu(self)
+        actions = {menu.addAction(v): v for v in _AC_DC_PRESETS}
+        menu.addSeparator()
+        custom_act = menu.addAction("직접 입력…")
+
+        result = menu.exec(pos)
+        if result is None:
+            return
+
+        if result is custom_act:
+            col_name = "AC" if col == _COL_AC else "DC"
+            text, ok = QInputDialog.getText(
+                self, "직접 입력", f"{col_name}(V) 일괄 적용 값:"
+            )
+            if not ok or not text.strip():
+                return
+            value = text.strip()
+        else:
+            value = actions[result]
+
+        self._fill_column(col, value)
+
+    def _fill_column(self, col: int, value: str) -> None:
+        for row in range(_HEADER_ROWS, self.rowCount()):
+            item = QTableWidgetItem(value)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.setItem(row, col, item)
+
+    # ── 동적 CHIP 열 추가 ────────────────────────────────────────────
+    @staticmethod
+    def chip_col_start(chip_num: int) -> int:
+        """chip_num(1-based) Cp 열 인덱스."""
+        return _FIXED_COLS + (chip_num - 1) * 2
+
+    def chip_count(self) -> int:
+        return self._chip_count
+
+    def add_chip_column(self) -> None:
+        """다음 CHIP의 Cp/DF 열을 테이블 끝에 추가한다."""
+        self._chip_count += 1
+        chip_num = self._chip_count
+        col_cp   = self.columnCount()
+
+        self.insertColumn(col_cp)
+        self.insertColumn(col_cp + 1)
+        self.setColumnWidth(col_cp,     90)
+        self.setColumnWidth(col_cp + 1, 75)
+
+        # 그룹 헤더 (행 0)
+        self.setItem(0, col_cp, _make_header_item(f"CHIP {chip_num}"))
+        self.setSpan(0, col_cp, 1, 2)
+
+        # 서브 헤더 (행 1)
+        self.setItem(1, col_cp,     _make_header_item("Cp"))
+        self.setItem(1, col_cp + 1, _make_header_item("DF"))
+
+    # ── 데이터 행 관리 ───────────────────────────────────────────────
+    def append_data_row(self) -> int:
+        """새 데이터 행 삽입 후 행 인덱스 반환."""
+        row = self.rowCount()
+        self.insertRow(row)
+        self.setRowHeight(row, 28)
+        no_item = QTableWidgetItem(str(row - _HEADER_ROWS + 1))
+        no_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        no_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        no_item.setBackground(QColor("#F8FAFC"))
+        no_item.setForeground(QColor("#64748B"))
+        self.setItem(row, _COL_NO, no_item)
+        return row
+
+    def clear_data(self) -> None:
+        """CHIP 1만 남기고 테이블 전체 초기화."""
+        self.clearContents()
+        self.setRowCount(0)
+        self.setColumnCount(_FIXED_COLS + 2)   # 5열로 리셋
+        self._chip_count = 1
+        self._build_header_rows()
+        for _ in range(_INIT_ROWS):
+            self.append_data_row()
+
+    # ── 키 이벤트 ────────────────────────────────────────────────────
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        key = event.key()
         if event.matches(QKeySequence.StandardKey.Copy):
             self._copy_selection()
-        elif event.key() == Qt.Key.Key_Delete:
-            # 선택된 셀 중 col > 0 인 열을 역순(큰 인덱스 먼저)으로 삭제 요청
-            cols = sorted(
-                {idx.column() for idx in self.selectedIndexes() if idx.column() > 0},
-                reverse=True,
-            )
-            for c in cols:
-                self.column_delete_requested.emit(c)
+        elif key == Qt.Key.Key_Delete:
+            self._delete_selected()
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            idx = self.currentIndex()
+            if not idx.isValid() or idx.row() < _HEADER_ROWS:
+                super().keyPressEvent(event)
+                return
+            next_row = idx.row() + 1
+            if next_row >= self.rowCount():
+                next_row = self.append_data_row()
+            super().keyPressEvent(event)  # 에디터 커밋 후 닫기 (EditingState에서 이동 없음)
+            self.setCurrentCell(next_row, idx.column())
         else:
             super().keyPressEvent(event)
 
-    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
-        col = self.columnAt(event.pos().x())
-        if col <= 0:
-            super().contextMenuEvent(event)
-            return
-        menu = QMenu(self)
-        header_item = self.horizontalHeaderItem(col)
-        col_name = header_item.text() if header_item else f"{col}열"
-        del_action = menu.addAction(f"'{col_name}' 삭제")
-        if menu.exec(event.globalPos()) == del_action:
-            self.column_delete_requested.emit(col)
+    def _delete_selected(self) -> None:
+        """선택 범위 내 편집 가능한 데이터 셀 값을 삭제한다."""
+        for rng in self.selectedRanges():
+            for row in range(rng.topRow(), rng.bottomRow() + 1):
+                if row < _HEADER_ROWS:
+                    continue
+                for col in range(rng.leftColumn(), rng.rightColumn() + 1):
+                    if col == _COL_NO:
+                        continue
+                    item = self.item(row, col)
+                    if item is not None:
+                        item.setText("")
 
     def _copy_selection(self) -> None:
         ranges = self.selectedRanges()
         if not ranges:
             return
-        min_row = min(r.topRow() for r in ranges)
-        max_row = max(r.bottomRow() for r in ranges)
-        min_col = min(r.leftColumn() for r in ranges)
-        max_col = max(r.rightColumn() for r in ranges)
-
+        min_r = min(r.topRow()      for r in ranges)
+        max_r = max(r.bottomRow()   for r in ranges)
+        min_c = min(r.leftColumn()  for r in ranges)
+        max_c = max(r.rightColumn() for r in ranges)
         lines: list[str] = []
-        for row in range(min_row, max_row + 1):
+        for row in range(min_r, max_r + 1):
             cells: list[str] = []
-            for col in range(min_col, max_col + 1):
+            for col in range(min_c, max_c + 1):
                 item = self.item(row, col)
-                cells.append(item.text() if item else "")
+                if item is None:
+                    w = self.cellWidget(row, col)
+                    cells.append(w.text() if w and hasattr(w, "text") else "")
+                else:
+                    cells.append(item.text())
             lines.append("\t".join(cells))
         QApplication.clipboard().setText("\n".join(lines))
 
 
-# ── DC Bias 측정 페이지 ──────────────────────────────────────────
+# ── DC Bias 측정 페이지 ───────────────────────────────────────────────────────
 class DCBiasMeasurementPage(QWidget):
-    """DC Bias 전압 스윕 측정 전용 페이지."""
+    """DC Bias 특성 측정 전용 페이지 (Cp-D / Cs-D 모드).
 
-    back_requested = pyqtSignal()
-    status_message = pyqtSignal(str)
-    instrument_connected = pyqtSignal(str)   # (model_name) → MainWindow 상태바 갱신
+    측정 흐름:
+      1차 측정 시작 → CHIP 1 열로 모든 행 측정
+      2차 측정 시작 → CHIP 2 열 추가 → 모든 행 측정
+      …
+    """
+
+    back_requested       = pyqtSignal()
+    status_message       = pyqtSignal(str)
+    instrument_connected = pyqtSignal(str)
 
     def __init__(
         self,
@@ -236,171 +417,191 @@ class DCBiasMeasurementPage(QWidget):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.settings = settings
+        self.settings   = settings
         self.api_client = api_client
-        self._instrument: Optional[BaseInstrument] = None
-        self._thread: Optional[QThread] = None
-        self._worker: Optional[_SweepWorker] = None
-        self._sweep_count: int = 0          # 완료된 스윕 횟수
-        self._voltage_points: List[float] = []
-
+        self._instrument: Optional[BaseInstrument]    = None
+        self._thread:     Optional[QThread]           = None
+        self._worker:     Optional[_MeasurementWorker] = None
+        self._next_chip:       int       = 1   # 다음 측정 시작 때 사용할 CHIP 번호
+        self._current_chip:    int       = 0   # 현재 측정 중인 CHIP 번호 (0 = 미측정)
+        self._meas_count:      int       = 0
+        self._meas_row_indices: List[int] = []  # 유효 조건 행의 테이블 행 인덱스
         self._init_ui()
 
-    # ── UI 구성 ─────────────────────────────────────────────────
+    # ── UI 구성 ──────────────────────────────────────────────────────
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         root.addWidget(self._build_page_header())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
         splitter.addWidget(self._build_condition_panel())
         splitter.addWidget(self._build_result_panel())
-        splitter.setSizes([300, 900])
-        splitter.setStretchFactor(0, 0)   # 조건 패널: 사용자 드래그만으로 조절
-        splitter.setStretchFactor(1, 1)   # 결과 패널: 창 확장 시 자동으로 늘어남
-
+        splitter.setSizes([230, 900])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         root.addWidget(splitter)
 
-    # ── 페이지 헤더 ─────────────────────────────────────────────
+    # ── 페이지 서브헤더 ──────────────────────────────────────────────
     def _build_page_header(self) -> QWidget:
         header = QWidget()
         header.setFixedHeight(48)
         header.setStyleSheet("background: #F4F6F9; border-bottom: 1px solid #E2E8F0;")
-
         layout = QHBoxLayout(header)
         layout.setContentsMargins(16, 0, 16, 0)
 
-        back_btn = QPushButton("← 홈으로")
-        back_btn.setObjectName("dc-secondary")
-        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(self.back_requested)
-
         title = QLabel("DC Bias 특성 측정")
-        title_font = QFont("Segoe UI", 14)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        tf = QFont("Segoe UI", 14)
+        tf.setBold(True)
+        title.setFont(tf)
         title.setStyleSheet("color: #1E3A5F;")
 
         self._instr_label = QLabel("계측기: 미연결")
         self._instr_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
 
-        layout.addWidget(back_btn)
-        layout.addSpacing(16)
         layout.addWidget(title)
         layout.addStretch()
         layout.addWidget(self._instr_label)
         return header
 
-    # ── 왼쪽: 조건 패널 ─────────────────────────────────────────
+    # ── 왼쪽: 조건 패널 ──────────────────────────────────────────────
     def _build_condition_panel(self) -> QWidget:
         container = QWidget()
         container.setObjectName("dc-condition-panel")
-        container.setFixedWidth(300)   # 창 크기 변경 시에도 너비 고정
-        # 셀렉터 없는 인라인 스타일은 자식 QPushButton까지 background: white 를
-        # 덮어쓰므로 반드시 objectName 스코프 셀렉터를 사용한다
+        container.setFixedWidth(230)
         container.setStyleSheet(
-            "QWidget#dc-condition-panel { background: #FFFFFF; border-right: 1px solid #E2E8F0; }"
+            "QWidget#dc-condition-panel {"
+            "  background: #FFFFFF;"
+            "  border-right: 1px solid #E2E8F0;"
+            "}"
         )
 
-        # ── 메인 레이아웃: 스크롤 영역(상단) + 고정 버튼(하단) ──
         main_layout = QVBoxLayout(container)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── 스크롤 영역 (계측기 + 측정 조건 + 상태) ─────────────
         scroll_content = QWidget()
         inner = QVBoxLayout(scroll_content)
         inner.setContentsMargins(12, 12, 12, 8)
         inner.setSpacing(8)
 
-        # 계측기 그룹
+        # ── 계측기 그룹 ──────────────────────────────────────────────
         instr_box = QGroupBox("계측기")
-        instr_form = QFormLayout(instr_box)
-        instr_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        instr_form.setVerticalSpacing(10)
-        instr_form.setHorizontalSpacing(12)
-        instr_form.setContentsMargins(12, 18, 12, 10)
+        instr_layout = QVBoxLayout(instr_box)
+        instr_layout.setContentsMargins(12, 18, 12, 12)
+        instr_layout.setSpacing(6)
 
-        self._instr_status_label = QLabel("미연결")
-        self._instr_status_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        instr_form.addRow("상태:", self._instr_status_label)
+        gpib_label = QLabel("GPIB 주소")
+        gpib_label.setStyleSheet("font-size: 12px; color: #374151;")
+        instr_layout.addWidget(gpib_label)
 
-        self._instr_connect_btn = QPushButton("계측기 연결")
+        # GPIB 콤보 + 연결 버튼 + 상태 점 (한 행)
+        gpib_row = QHBoxLayout()
+        gpib_row.setSpacing(6)
+
+        self._gpib_combo = QComboBox()
+        self._gpib_combo.setFont(QFont("Segoe UI", 9))
+        self._gpib_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._gpib_combo.setPlaceholderText("(자동 스캔)")
+        self._gpib_combo.currentTextChanged.connect(self._on_gpib_changed)
+
+        self._instr_connect_btn = QPushButton("연결")
         self._instr_connect_btn.setObjectName("dc-secondary")
-        self._instr_connect_btn.setMinimumHeight(34)
+        self._instr_connect_btn.setFixedWidth(46)
+        self._instr_connect_btn.setMinimumHeight(28)
         self._instr_connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._instr_connect_btn.clicked.connect(self._on_instrument_connect)
-        instr_form.addRow(self._instr_connect_btn)
+
+        self._instr_dot = QLabel("●")
+        self._instr_dot.setStyleSheet("color: #94A3B8; font-size: 18px;")
+        self._instr_dot.setFixedWidth(22)
+        self._instr_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        gpib_row.addWidget(self._gpib_combo, 1)
+        gpib_row.addWidget(self._instr_connect_btn)
+        gpib_row.addWidget(self._instr_dot)
+        instr_layout.addLayout(gpib_row)
 
         inner.addWidget(instr_box)
 
-        # 측정 조건 그룹
+        # ── 측정 조건 그룹 ────────────────────────────────────────────
         cond_box = QGroupBox("측정 조건")
-        form = QFormLayout(cond_box)
-        # AllNonFixedFieldsGrow: 스핀박스가 패널 잔여 너비를 채워 레이블·입력칸 간격 확보
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.setVerticalSpacing(10)
-        form.setHorizontalSpacing(12)
-        form.setContentsMargins(12, 20, 12, 12)
+        cond_form = QFormLayout(cond_box)
+        cond_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        cond_form.setVerticalSpacing(8)
+        cond_form.setHorizontalSpacing(8)
+        cond_form.setContentsMargins(12, 20, 12, 12)
 
-        self._freq_spin = QDoubleSpinBox()
-        self._freq_spin.setRange(20.0, 2_000_000.0)
-        self._freq_spin.setValue(1_000.0)
-        self._freq_spin.setSuffix(" Hz")
-        self._freq_spin.setDecimals(1)
+        _COND_STYLE = (
+            "QComboBox {"
+            "  border: 1.5px solid #1E3A5F;"
+            "  border-radius: 6px;"
+            "  padding: 5px 10px;"
+            "  font-size: 9pt;"
+            "}"
+            "QComboBox:focus { border: 2px solid #1E3A5F; }"
+        )
 
-        self._ac_spin = QDoubleSpinBox()
-        self._ac_spin.setRange(0.005, 2.0)
-        self._ac_spin.setValue(1.0)
-        self._ac_spin.setSuffix(" V")
-        self._ac_spin.setDecimals(3)
+        # 측정 모드
+        self._mode_combo = QComboBox()
+        self._mode_combo.setFont(QFont("Segoe UI", 9))
+        self._mode_combo.addItems(_MODE_OPTIONS)
+        self._mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode_combo.setStyleSheet(_COND_STYLE)
+        cond_form.addRow("측정 모드:", self._mode_combo)
 
-        self._start_spin = QDoubleSpinBox()
-        self._start_spin.setRange(-40.0, 40.0)
-        self._start_spin.setValue(0.0)
-        self._start_spin.setSuffix(" V")
-        self._start_spin.setDecimals(2)
+        # 주파수(Hz) — '직접 입력' 선택 시 콤보 자체가 편집 가능해짐
+        self._freq_combo = QComboBox()
+        self._freq_combo.setFont(QFont("Segoe UI", 9))
+        self._freq_combo.addItems(_FREQ_OPTIONS)
+        self._freq_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._freq_combo.setStyleSheet(_COND_STYLE)
+        self._freq_combo.currentIndexChanged.connect(self._on_freq_index_changed)
+        cond_form.addRow("주파수(Hz):", self._freq_combo)
 
-        self._end_spin = QDoubleSpinBox()
-        self._end_spin.setRange(-40.0, 40.0)
-        self._end_spin.setValue(5.0)
-        self._end_spin.setSuffix(" V")
-        self._end_spin.setDecimals(2)
+        # 유지시간(s) — '직접 입력' 선택 시 콤보 자체가 편집 가능해짐
+        self._hold_combo = QComboBox()
+        self._hold_combo.setFont(QFont("Segoe UI", 9))
+        self._hold_combo.addItems(_HOLD_OPTIONS)
+        self._hold_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hold_combo.setStyleSheet(_COND_STYLE)
+        self._hold_combo.currentIndexChanged.connect(self._on_hold_index_changed)
+        cond_form.addRow("유지시간(s):", self._hold_combo)
 
-        self._step_spin = QDoubleSpinBox()
-        self._step_spin.setRange(0.01, 10.0)
-        self._step_spin.setValue(1.0)
-        self._step_spin.setSuffix(" V")
-        self._step_spin.setDecimals(2)
-
-        self._delay_spin = QSpinBox()
-        self._delay_spin.setRange(0, 5_000)
-        self._delay_spin.setValue(100)
-        self._delay_spin.setSuffix(" ms")
-
-        form.addRow("주파수:", self._freq_spin)
-        form.addRow("AC Level:", self._ac_spin)
-        form.addRow("시작 전압:", self._start_spin)
-        form.addRow("종료 전압:", self._end_spin)
-        form.addRow("전압 스텝:", self._step_spin)
-        form.addRow("지연 시간:", self._delay_spin)
+        # LOT no. — 빨간 테두리, 7자리 영문+숫자
+        self._lot_edit = QLineEdit()
+        self._lot_edit.setFont(QFont("Segoe UI", 9))
+        self._lot_edit.setMaxLength(7)
+        self._lot_edit.setPlaceholderText("7자리 (영문+숫자)")
+        self._lot_edit.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression("[A-Za-z0-9]{0,7}"), self._lot_edit
+            )
+        )
+        self._lot_edit.setStyleSheet(
+            "QLineEdit {"
+            "  border: 1.5px solid #DC2626;"
+            "  border-radius: 6px;"
+            "  padding: 5px 10px;"
+            "}"
+            "QLineEdit:focus { border: 2px solid #DC2626; }"
+        )
+        self._lot_edit.editingFinished.connect(self._on_lot_editing_finished)
+        cond_form.addRow("LOT no.:", self._lot_edit)
 
         inner.addWidget(cond_box)
 
-        # 측정 횟수 + 진행 + 상태
+        # 상태 표시
         self._count_label = QLabel("측정 횟수: 0회")
         self._count_label.setStyleSheet("color: #64748B; font-size: 12px;")
         inner.addWidget(self._count_label)
 
         self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._progress_bar.setTextVisible(True)
-        self._progress_bar.setFormat("%v / %m 포인트")
-        self._progress_bar.setFixedHeight(18)
+        self._progress_bar.setFixedHeight(14)
+        self._progress_bar.setFormat("행 %v / %m")
         self._progress_bar.hide()
         inner.addWidget(self._progress_bar)
 
@@ -418,15 +619,15 @@ class DCBiasMeasurementPage(QWidget):
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll, 1)
 
-        # ── 고정 버튼 섹션 (항상 보임) ──────────────────────────
-        btn_widget = QWidget()
-        btn_widget.setObjectName("dc-btn-panel")
-        btn_widget.setStyleSheet(
+        # ── 고정 버튼 섹션 ────────────────────────────────────────────
+        btn_panel = QWidget()
+        btn_panel.setObjectName("dc-btn-panel")
+        btn_panel.setStyleSheet(
             "QWidget#dc-btn-panel { background: #FFFFFF; border-top: 1px solid #E2E8F0; }"
         )
-        btn_layout = QVBoxLayout(btn_widget)
-        btn_layout.setContentsMargins(16, 12, 16, 16)
-        btn_layout.setSpacing(8)
+        bp = QVBoxLayout(btn_panel)
+        bp.setContentsMargins(16, 12, 16, 16)
+        bp.setSpacing(8)
 
         self._start_btn = QPushButton("▶  측정 시작")
         self._start_btn.setObjectName("dc-primary")
@@ -454,62 +655,125 @@ class DCBiasMeasurementPage(QWidget):
         self._export_btn.setEnabled(False)
         self._export_btn.clicked.connect(self._on_export_csv)
 
-        btn_layout.addWidget(self._start_btn)
-        btn_layout.addWidget(self._stop_btn)
-        btn_layout.addWidget(self._clear_btn)
-        btn_layout.addWidget(self._export_btn)
-
-        main_layout.addWidget(btn_widget)
+        bp.addWidget(self._start_btn)
+        bp.addWidget(self._stop_btn)
+        bp.addWidget(self._clear_btn)
+        bp.addWidget(self._export_btn)
+        main_layout.addWidget(btn_panel)
 
         return container
 
-    # ── 오른쪽: 결과 테이블 ─────────────────────────────────────
+    # ── 오른쪽: 결과 패널 ────────────────────────────────────────────
     def _build_result_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(8)
 
-        # 패널 헤더
-        header_row = QHBoxLayout()
-        result_label = QLabel("측정 결과")
-        font = QFont("Segoe UI", 12)
-        font.setBold(True)
-        result_label.setFont(font)
-        result_label.setStyleSheet("color: #1E293B;")
+        label = QLabel("측정 결과")
+        lf = QFont("Segoe UI", 12)
+        lf.setBold(True)
+        label.setFont(lf)
+        label.setStyleSheet("color: #1E293B;")
+        layout.addWidget(label)
 
-        self._point_count_label = QLabel("")
-        self._point_count_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
-
-        header_row.addWidget(result_label)
-        header_row.addStretch()
-        header_row.addWidget(self._point_count_label)
-        layout.addLayout(header_row)
-
-        # 테이블 (셀 범위 선택 + Ctrl+C 복사 지원)
-        self._table = _CopyableTable(0, 1)
-        self._table.setHorizontalHeaderLabels(["인가 전압 (V)"])
-        self._table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Fixed
-        )
-        self._table.horizontalHeader().setDefaultSectionSize(130)
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setDefaultSectionSize(28)
-        self._table.verticalHeader().setVisible(True)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self._table.setAlternatingRowColors(True)
-        self._table.setStyleSheet(
-            "QTableWidget { font-size: 12px; }"
-            "QTableWidget::item { padding: 2px 8px; }"
-        )
-        self._table.column_delete_requested.connect(self._on_delete_column)
+        self._table = _ResultTable()
         layout.addWidget(self._table)
-
         return panel
 
-    # ── 이벤트 핸들러 ────────────────────────────────────────────
+    # ── 공개 메서드: 페이지 진입 시 자동 GPIB 스캔 ───────────────────
+    def start_gpib_scan(self) -> None:
+        """MainWindow에서 DC-bias 페이지 진입 시 호출 — GPIB 자동 스캔."""
+        if self._instrument:
+            return   # 이미 연결된 경우 재스캔 불필요
+        self._set_status("GPIB 스캔 중…")
+        QApplication.processEvents()
+        try:
+            engine    = MeasurementEngine(self.settings)
+            resources = engine.list_gpib_resources()
+            self._gpib_combo.clear()
+            if resources:
+                self._gpib_combo.addItems(resources)
+                self._gpib_combo.setEnabled(True)
+                self._set_status(f"{len(resources)}개 리소스 발견.")
+            else:
+                self._gpib_combo.setEnabled(False)
+                self._set_status("GPIB 리소스 없음.", error=True)
+        except Exception as exc:
+            self._gpib_combo.clear()
+            self._gpib_combo.setEnabled(False)
+            self._set_status(f"스캔 실패: {exc}", error=True)
+
+    # ── 이벤트 핸들러 ─────────────────────────────────────────────────
+
+    def _on_gpib_changed(self, _: str) -> None:
+        if not self._instrument:
+            return
+        # 다른 리소스 선택 시 연결 해제
+        self._instr_dot.setStyleSheet("color: #94A3B8; font-size: 18px;")
+        self._instr_label.setText("계측기: 미연결")
+        self._instr_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        self._instrument = None
+
+    def _on_instrument_connect(self) -> None:
+        resource_name = self._gpib_combo.currentText()
+        if not resource_name:
+            self._set_status("GPIB 리소스를 먼저 선택하세요.", error=True)
+            return
+
+        model = "E4980A"
+
+        self._instr_dot.setStyleSheet("color: #F59E0B; font-size: 18px;")
+        self._instr_connect_btn.setEnabled(False)
+        self._set_status(f"연결 시도 중… ({resource_name})")
+        QApplication.processEvents()
+
+        try:
+            engine     = MeasurementEngine(self.settings)
+            instrument = engine.load_instrument(model, resource_name)
+            self.set_instrument(instrument)
+        except Exception as exc:
+            self._instr_dot.setStyleSheet("color: #EF4444; font-size: 18px;")
+            self._set_status(f"연결 실패: {exc}", error=True)
+        finally:
+            self._instr_connect_btn.setEnabled(True)
+
+    def _on_freq_index_changed(self, index: int) -> None:
+        """'직접 입력' 선택 시 콤보를 편집 가능하게 전환."""
+        if self._freq_combo.itemText(index) == _CUSTOM_LABEL:
+            self._freq_combo.setEditable(True)
+            self._freq_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            self._freq_combo.lineEdit().setFont(QFont("Segoe UI", 9))
+            self._freq_combo.lineEdit().clear()
+            self._freq_combo.lineEdit().setPlaceholderText("Hz 입력 (예: 5000)")
+            self._freq_combo.lineEdit().setFocus()
+        elif self._freq_combo.isEditable():
+            self._freq_combo.setEditable(False)
+
+    def _on_hold_index_changed(self, index: int) -> None:
+        """'직접 입력' 선택 시 콤보를 편집 가능하게 전환."""
+        if self._hold_combo.itemText(index) == _CUSTOM_LABEL:
+            self._hold_combo.setEditable(True)
+            self._hold_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            self._hold_combo.lineEdit().setFont(QFont("Segoe UI", 9))
+            self._hold_combo.lineEdit().clear()
+            self._hold_combo.lineEdit().setPlaceholderText("초 입력 (예: 10)")
+            self._hold_combo.lineEdit().setFocus()
+        elif self._hold_combo.isEditable():
+            self._hold_combo.setEditable(False)
+
+    def _on_lot_editing_finished(self) -> None:
+        """포커스를 잃을 때 LOT no. 7자리 검증 — 툴팁 메시지."""
+        lot = self._lot_edit.text()
+        if lot and len(lot) != 7:
+            QToolTip.showText(
+                self._lot_edit.mapToGlobal(
+                    QPoint(0, self._lot_edit.height())
+                ),
+                "7자리를 입력하세요.",
+                self._lot_edit,
+            )
+
     def _on_start(self) -> None:
         if self._instrument is None:
             self._set_status("계측기가 연결되지 않았습니다.", error=True)
@@ -517,53 +781,86 @@ class DCBiasMeasurementPage(QWidget):
         if self._thread and self._thread.isRunning():
             return
 
-        # 전압 포인트 계산
-        self._voltage_points = _compute_voltage_points(
-            self._start_spin.value(),
-            self._end_spin.value(),
-            self._step_spin.value(),
-        )
-        if not self._voltage_points:
-            self._set_status("유효한 전압 범위를 설정하세요.", error=True)
+        # 측정 조건 일괄 검증
+        missing: List[str] = []
+
+        lot = self._lot_edit.text()
+        if len(lot) != 7:
+            missing.append("LOT no. (7자리 영문+숫자)")
+
+        freq_text = self._freq_combo.currentText().strip()
+        freq_valid = bool(freq_text) and freq_text != _CUSTOM_LABEL
+        if freq_valid:
+            try:
+                self._parse_freq(freq_text)
+            except ValueError:
+                freq_valid = False
+        if not freq_valid:
+            missing.append("주파수")
+
+        hold_text = self._hold_combo.currentText().strip()
+        hold_valid = bool(hold_text) and hold_text != _CUSTOM_LABEL
+        if hold_valid:
+            try:
+                float(hold_text)
+            except ValueError:
+                hold_valid = False
+        if not hold_valid:
+            missing.append("유지시간")
+
+        if missing:
+            self._set_status("비어 있는 조건을 입력해주세요.", error=True)
             return
 
-        # 테이블 행 초기화 (첫 스윕 시 또는 초기화 후)
-        if self._table.rowCount() == 0:
-            self._init_table_rows()
+        freq_hz = self._parse_freq(freq_text)
+        hold_s  = float(hold_text)
 
-        # 새 스윕 열 추가
-        self._sweep_count += 1
-        col_idx = self._table.columnCount()
-        self._table.setColumnCount(col_idx + 1)
-        self._table.setHorizontalHeaderItem(
-            col_idx,
-            QTableWidgetItem(f"{self._sweep_count}차 측정 (F)"),
-        )
+        # AC/DC 조건이 모두 유효한 행만 수집 (조건 확인 먼저, CHIP 열 추가 나중)
+        conditions: List[tuple] = []
+        row_indices: List[int]  = []
+        for row in range(_HEADER_ROWS, self._table.rowCount()):
+            ac_item = self._table.item(row, _COL_AC)
+            dc_item = self._table.item(row, _COL_DC)
+            ac_text = ac_item.text().strip() if ac_item else ""
+            dc_text = dc_item.text().strip() if dc_item else ""
+            try:
+                ac_v = float(ac_text)
+                dc_v = float(dc_text)
+            except ValueError:
+                continue   # AC 또는 DC가 비어있거나 숫자가 아닌 행 스킵
+            conditions.append((ac_v, dc_v))
+            row_indices.append(row)
 
-        # 진행 표시
-        self._progress_bar.setMaximum(len(self._voltage_points))
+        if not conditions:
+            self._set_status("AC/DC 조건이 입력된 행이 없습니다.", error=True)
+            return
+
+        # 유효 행 확인 후 CHIP 열 추가
+        chip = self._next_chip
+        if chip > 1:
+            self._table.add_chip_column()
+        self._current_chip      = chip
+        self._meas_row_indices  = row_indices
+
+        self._progress_bar.setRange(0, len(conditions))
         self._progress_bar.setValue(0)
         self._progress_bar.show()
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
-        self._set_status(f"스윕 {self._sweep_count}차 진행 중…")
+        self._set_status(f"CHIP {chip} 측정 중… (총 {len(conditions)}행)")
 
-        # 워커 스레드 시작
         self._thread = QThread()
-        self._worker = _SweepWorker(
+        self._worker = _MeasurementWorker(
             instrument=self._instrument,
-            voltage_points=self._voltage_points,
-            frequency=self._freq_spin.value(),
-            ac_level=self._ac_spin.value(),
-            delay_ms=self._delay_spin.value(),
+            frequency=freq_hz,
+            conditions=conditions,
+            hold_s=hold_s,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.row_done.connect(
-            lambda row, v, c: self._on_row_done(row, v, c, col_idx)
-        )
-        self._worker.finished.connect(self._on_sweep_finished)
-        self._worker.error.connect(self._on_sweep_error)
+        self._worker.row_done.connect(self._on_row_done)
+        self._worker.finished.connect(self._on_meas_finished)
+        self._worker.error.connect(self._on_meas_error)
         self._worker.finished.connect(self._thread.quit)
         self._worker.error.connect(self._thread.quit)
         self._thread.start()
@@ -576,33 +873,14 @@ class DCBiasMeasurementPage(QWidget):
     def _on_clear(self) -> None:
         if self._thread and self._thread.isRunning():
             return
-        self._table.clearContents()
-        self._table.setRowCount(0)
-        self._table.setColumnCount(1)
-        self._table.setHorizontalHeaderLabels(["인가 전압 (V)"])
-        self._sweep_count = 0
-        self._voltage_points = []
+        self._table.clear_data()
+        self._next_chip    = 1
+        self._current_chip = 0
+        self._meas_count   = 0
         self._count_label.setText("측정 횟수: 0회")
-        self._point_count_label.setText("")
         self._progress_bar.hide()
         self._export_btn.setEnabled(False)
         self._set_status("")
-
-    def _on_delete_column(self, col: int) -> None:
-        """지정 측정 열을 삭제하고 헤더를 재번호 매긴다."""
-        if col == 0 or (self._thread and self._thread.isRunning()):
-            return
-        self._table.removeColumn(col)
-        # 남은 측정 열(col >= 1) 헤더를 1차, 2차, ... 순으로 재번호
-        for i in range(1, self._table.columnCount()):
-            self._table.setHorizontalHeaderItem(
-                i, QTableWidgetItem(f"{i}차 측정 (F)")
-            )
-        self._sweep_count = self._table.columnCount() - 1
-        self._count_label.setText(f"측정 횟수: {self._sweep_count}회")
-        if self._sweep_count == 0:
-            self._export_btn.setEnabled(False)
-            self._point_count_label.setText("")
 
     def _on_export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -617,112 +895,96 @@ class DCBiasMeasurementPage(QWidget):
         except Exception as exc:
             self._set_status(f"저장 실패: {exc}", error=True)
 
-    # ── 워커 슬롯 ────────────────────────────────────────────────
-    @pyqtSlot(int, float, float, int)
-    def _on_row_done(self, row: int, voltage: float, capacitance: float, col: int) -> None:
-        # 인가 전압 열은 1차 측정 때만 기입
-        if col == 1:
-            v_item = QTableWidgetItem(f"{voltage:.3f}")
-            v_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            v_item.setForeground(QColor("#1E3A5F"))
-            self._table.setItem(row, 0, v_item)
+    # ── 워커 슬롯 ─────────────────────────────────────────────────────
 
-        # 측정값 기입
-        c_item = QTableWidgetItem(_fmt_cap(capacitance))
-        c_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        c_item.setData(Qt.ItemDataRole.UserRole, capacitance)   # 원시값(F) 보존
-        self._table.setItem(row, col, c_item)
+    @pyqtSlot(int, float, float)
+    def _on_row_done(self, row_idx: int, cp: float, df: float) -> None:
+        # row_idx는 conditions 리스트의 0-based 인덱스 → 실제 테이블 행으로 변환
+        if row_idx >= len(self._meas_row_indices):
+            return
+        table_row = self._meas_row_indices[row_idx]
+        col_cp    = self._table.chip_col_start(self._current_chip)
+        col_df    = col_cp + 1
 
-        self._progress_bar.setValue(row + 1)
-        self._table.scrollToItem(c_item)
+        cp_item = QTableWidgetItem(_fmt_cap(cp))
+        cp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        cp_item.setData(Qt.ItemDataRole.UserRole, cp)
+        self._table.setItem(table_row, col_cp, cp_item)
+
+        df_txt  = "N/A" if df != df else f"{df:.6f}"
+        df_item = QTableWidgetItem(df_txt)
+        df_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(table_row, col_df, df_item)
+
+        self._progress_bar.setValue(row_idx + 1)
 
     @pyqtSlot()
-    def _on_sweep_finished(self) -> None:
+    def _on_meas_finished(self) -> None:
+        self._meas_count += 1
+        self._next_chip  += 1
+        self._current_chip = 0
+        self._count_label.setText(f"측정 횟수: {self._meas_count}회")
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
-        self._export_btn.setEnabled(True)
         self._progress_bar.hide()
-        self._count_label.setText(f"측정 횟수: {self._sweep_count}회")
-        self._set_status(f"{self._sweep_count}차 스윕 완료.")
-        self.status_message.emit(f"DC Bias 스윕 {self._sweep_count}차 완료")
+        self._export_btn.setEnabled(True)
+        msg = f"CHIP {self._meas_count} 측정 완료."
+        self._set_status(msg)
+        self.status_message.emit(msg)
 
     @pyqtSlot(str)
-    def _on_sweep_error(self, msg: str) -> None:
+    def _on_meas_error(self, msg: str) -> None:
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._progress_bar.hide()
-        # 열 헤더는 이미 추가된 상태이므로 "(오류)" 표시로 구분
-        col = self._table.columnCount() - 1
-        if col >= 1:
-            header_item = self._table.horizontalHeaderItem(col)
-            if header_item:
-                header_item.setText(f"{self._sweep_count}차 측정 (오류)")
-        self._sweep_count = max(0, self._sweep_count - 1)
-        self._count_label.setText(f"측정 횟수: {self._sweep_count}회")
+        # 실패한 CHIP 열이 추가된 경우 _next_chip을 되돌리지 않음
+        # (사용자가 초기화 후 재시도)
         self._set_status(f"오류: {msg}", error=True)
 
-    # ── 헬퍼 ─────────────────────────────────────────────────────
-    def _on_instrument_connect(self) -> None:
-        """계측기 연결 버튼 핸들러 — GPIB 스캔 후 드라이버를 로드한다."""
-        try:
-            from app.ui.dialogs.instrument_config import InstrumentConfigDialog
-            dialog = InstrumentConfigDialog(parent=self)
-            if dialog.exec():
-                cfg = dialog.get_config()
-                engine = MeasurementEngine(self.settings)
-                instrument = engine.load_instrument(cfg["model"], cfg["resource_name"])
-                self.set_instrument(instrument)
-        except Exception as exc:
-            self._set_status(f"계측기 연결 실패: {exc}", error=True)
+    # ── 헬퍼 ──────────────────────────────────────────────────────────
 
     def set_instrument(self, instrument: BaseInstrument) -> None:
-        """계측기 인스턴스를 주입한다."""
         self._instrument = instrument
         model = type(instrument).__name__
         self._instr_label.setText(f"계측기: {model} ●")
         self._instr_label.setStyleSheet("color: #4ADE80; font-size: 12px;")
-        self._instr_status_label.setText(f"{model} ●")
-        self._instr_status_label.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        self._instr_dot.setStyleSheet("color: #4ADE80; font-size: 18px;")
+        self._set_status(f"{model} 연결됨.")
         self.instrument_connected.emit(model)
-
-    def _init_table_rows(self) -> None:
-        """전압 포인트 수만큼 행을 미리 생성한다."""
-        self._table.setRowCount(len(self._voltage_points))
-        self._point_count_label.setText(
-            f"{len(self._voltage_points)} 포인트  "
-            f"({self._start_spin.value():.2f} V → {self._end_spin.value():.2f} V, "
-            f"스텝 {self._step_spin.value():.2f} V)"
-        )
 
     def _set_status(self, msg: str, *, error: bool = False) -> None:
         color = "#DC2626" if error else "#64748B"
         self._status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
         self._status_label.setText(msg)
 
+    @staticmethod
+    def _parse_freq(text: str) -> float:
+        t = text.upper().strip()
+        if t.endswith("K"):
+            return float(t[:-1]) * 1_000
+        if t.endswith("M"):
+            return float(t[:-1]) * 1_000_000
+        return float(t)
+
     def _export_to_csv(self, path: Path) -> None:
-        """현재 테이블 내용을 CSV로 저장한다."""
+        chip_count = self._table.chip_count()
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-
-            # 헤더 행
-            headers = [
-                self._table.horizontalHeaderItem(c).text()
-                for c in range(self._table.columnCount())
-            ]
+            headers = ["No.", "AC(V)", "DC(V)"]
+            for i in range(1, chip_count + 1):
+                headers += [f"CHIP{i}_Cp", f"CHIP{i}_DF"]
             writer.writerow(headers)
 
-            # 데이터 행 (측정값 열은 원시 float 값 사용)
-            for row in range(self._table.rowCount()):
+            total_cols = _FIXED_COLS + chip_count * 2
+            for row in range(_HEADER_ROWS, self._table.rowCount()):
                 row_data = []
-                for col in range(self._table.columnCount()):
+                for col in range(total_cols):
                     item = self._table.item(row, col)
                     if item is None:
                         row_data.append("")
-                    elif col == 0:
-                        # 전압: 숫자 그대로
-                        row_data.append(item.text())
                     else:
-                        # 용량: UserRole에 저장된 원시 float(F) 사용
                         raw = item.data(Qt.ItemDataRole.UserRole)
-                        row_data.append(f"{raw:.6e}" if raw is not None else item.text())
+                        row_data.append(
+                            f"{raw:.6e}" if isinstance(raw, float) else item.text()
+                        )
                 writer.writerow(row_data)
