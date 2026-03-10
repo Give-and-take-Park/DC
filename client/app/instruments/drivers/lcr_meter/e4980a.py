@@ -8,10 +8,9 @@ from app.instruments.registry import InstrumentRegistry
 class KeysightE4980A(BaseLCRMeter):
     """Keysight E4980A Precision LCR Meter GPIB 드라이버 (20 Hz – 2 MHz)
 
-    측정 함수: CPD (Cp–D) 모드
-      - Cp : 병렬 등가 정전용량 (F)
-      - D  : 손실계수 (dissipation factor, 무차원)
-              D = ESR × ω × Cp = 1 / Q
+    지원 측정 함수:
+      CPD — Cp–D 모드 : 병렬 등가 정전용량(Cp, F) + 손실계수(D, 무차원)
+      CSD — Cs–D 모드 : 직렬 등가 정전용량(Cs, F) + 손실계수(D, 무차원)
 
     MLCC DC Bias 특성 평가의 IEC/JIS 표준은 CPD 모드를 사용한다.
     ESR(직렬 등가 저항 Rs) 측정이 필요하면 CSRS 모드를 별도 사용한다.
@@ -37,67 +36,74 @@ class KeysightE4980A(BaseLCRMeter):
         return self._resource.query("*IDN?").strip()
 
     # ── 파라미터 설정 ────────────────────────────────────────────
+    def setup_sweep(
+        self,
+        frequency: float = 1000.0,
+        mode: str = "CPD",
+    ) -> None:
+        """스윕 시작 전 1회 호출 — 스윕 내내 변하지 않는 파라미터를 설정한다.
+
+          :FUNC:IMP:TYPE <mode> — 측정 함수 (CPD / CSD)
+          :FREQ <freq>          — 측정 주파수 (20 Hz – 2 MHz)
+          :BIAS:STATe ON        — DC 바이어스 출력 활성화
+          :INIT:CONT ON         — 연속 측정 모드 활성화 (FETC?가 항상 최신값 반환)
+                                   ※ 루프마다 재전송하면 트리거가 리셋되므로 1회만 전송
+        """
+        self._resource.write(f":FUNC:IMP:TYPE {mode}")  # 측정 함수 (CPD / CSD)
+        self._resource.write(f":FREQ {frequency}")       # 주파수 (Hz) — 스윕 내 고정
+        self._resource.write(":BIAS:STATe ON")           # DC 바이어스 출력 ON
+        self._resource.write(":INIT:CONT ON")            # 연속 측정 모드 활성화
+
     def configure(
         self,
         frequency: float = 1000.0,
         ac_level: float = 1.0,
         dc_bias: float = 0.0,
+        mode: str = "CPD",
         **kwargs,
     ) -> None:
-        """측정 파라미터를 E4980A로 전송하고 DC 바이어스 출력을 활성화한다.
+        """스윕 루프 내 각 행마다 호출 — 행별로 달라지는 AC/DC 조건만 전송한다.
 
-        전송되는 SCPI 커맨드 (순서 중요):
+          :VOLT <level>  — AC 신호 레벨 (5 mV – 2 V rms)
+          :BIAS:VOLT <v> — DC 바이어스 전압 (0 – ±40 V)
 
-          :FUNC:IMP:TYPE CPD   — 측정 함수: Cp–D 모드
-                                  (FETC? 응답: Cp[F], D[무차원])
-          :FREQ <freq>         — 측정 주파수 (20 Hz – 2 MHz)
-          :VOLT <level>        — AC 신호 레벨 (5 mV – 2 V rms)
-          :BIAS:VOLT <v>       — DC 바이어스 전압 (0 – ±40 V)
-          :BIAS:STATe ON       — DC 바이어스 출력 활성화
-                                  ※ 이 커맨드 없이는 BIAS:VOLT 설정이 무시됨
-          :INIT:CONT ON        — 연속 측정 초기화 활성화
-                                  ※ FETC?가 항상 최신값을 반환하도록 보장
-                                    (이전 세션에서 단일 트리거 모드였을 경우 대비)
+        ※ :FUNC:IMP:TYPE / :FREQ / :BIAS:STATe ON / :INIT:CONT ON 은
+           setup_sweep() 에서 1회 설정하므로 여기서는 전송하지 않음.
         """
-        self._resource.write(":FUNC:IMP:TYPE CPD")   # 측정 함수 → Cp-D
-        self._resource.write(f":FREQ {frequency}")    # 주파수 (Hz)
-        self._resource.write(f":VOLT {ac_level}")     # AC 레벨 (V rms)
-        self._resource.write(f":BIAS:VOLT {dc_bias}") # DC 바이어스 전압 (V)
-        self._resource.write(":BIAS:STATe ON")        # DC 바이어스 출력 ON
-        self._resource.write(":INIT:CONT ON")         # 연속 측정 모드 활성화
+        self._resource.write(f":VOLT {ac_level}")        # AC 레벨 (V rms)
+        self._resource.write(f":BIAS:VOLT {dc_bias}")    # DC 바이어스 전압 (V)
 
     # ── 측정 ────────────────────────────────────────────────────
     def measure(self, **kwargs) -> List[MeasurementResult]:
-        """현재 설정 조건으로 Cp, D 값을 측정하여 반환한다.
+        """현재 설정 조건으로 C, D 값을 측정하여 반환한다.
 
         :FETC? — 연속 측정 버퍼에서 최신 결과를 읽는다.
         응답 형식: "+C.CCCCCe-XX,+D.DDDDDe-XX"
-          - 첫 번째 값: Cp (단위: F)
+          - 첫 번째 값: Cp 또는 Cs (단위: F, 모드에 따라 결정)
           - 두 번째 값: D  (손실계수, 무차원)
 
         DC Bias 스윕 시 :BIAS:VOLT 변경 후 지연(≥ 1 측정 주기)을 두어야
         버퍼가 새 바이어스 조건의 측정값으로 갱신된다.
-        기본 지연 100 ms 는 ≥ 10 Hz 측정에서 안전하다.
         """
         raw = self._resource.query(":FETC?").strip()
         parts = raw.split(",")
         if len(parts) < 2:
             raise ValueError(f"예상치 못한 GPIB 응답: '{raw}'")
 
-        cp_val = float(parts[0])   # Cp (F)
-        d_val  = float(parts[1])   # D  (무차원, 손실계수)
+        cap_val = float(parts[0])  # Cp 또는 Cs (F)
+        d_val   = float(parts[1])  # D  (무차원, 손실계수)
 
         return [
             MeasurementResult(
                 characteristic=Characteristic.CAPACITANCE,
-                value=cp_val,
+                value=cap_val,
                 unit="F",
                 raw_response=raw,
             ),
             MeasurementResult(
-                characteristic=Characteristic.DF,   # D (손실계수) — Rp 아님, ESR 아님
+                characteristic=Characteristic.DF,
                 value=d_val,
-                unit="",                            # 무차원
+                unit="",
                 raw_response=raw,
             ),
         ]
@@ -115,7 +121,7 @@ class KeysightE4980A(BaseLCRMeter):
         """:BIAS:VOLT — DC 바이어스 전압 변경 (V).
 
         configure() 이후 :BIAS:STATe는 ON 상태이므로 전압만 갱신한다.
-        변경 후 충분한 지연(delay_ms)을 두면 :FETC?로 갱신된 측정값을 얻는다.
+        변경 후 충분한 지연을 두면 :FETC?로 갱신된 측정값을 얻는다.
         """
         self._resource.write(f":BIAS:VOLT {bias}")
 

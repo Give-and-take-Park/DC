@@ -88,7 +88,15 @@ class _NonNegativeDelegate(QStyledItemDelegate):
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
             editor.setValidator(QRegularExpressionValidator(self._PATTERN, editor))
+            editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            editor.setStyleSheet("QLineEdit { padding: 0px 2px; font-size: 12px; }")
         return editor
+
+    def setModelData(self, editor, model, index):  # type: ignore[override]
+        super().setModelData(editor, model, index)
+        # ※ model.setData(TextAlignmentRole)를 여기서 호출하면 커밋 사이클 도중
+        #   dataChanged 시그널이 발생해 "commitData … does not belong" 경고가 뜬다.
+        #   정렬은 _ResultTable.itemChanged 슬롯에서 커밋 완료 후 처리한다.
 
 
 # ── 헤더 셀 아이템 생성 ───────────────────────────────────────────────────────
@@ -106,13 +114,10 @@ def _make_header_item(text: str) -> QTableWidgetItem:
 
 # ── 정전용량 포맷 헬퍼 ────────────────────────────────────────────────────────
 def _fmt_cap(v: float) -> str:
+    """정전용량을 nF 단위 숫자로 변환 (단위 문자 제외)."""
     if v != v:
         return "N/A"
-    a = abs(v)
-    if a >= 1e-3:  return f"{v * 1e3:.4f} mF"
-    if a >= 1e-6:  return f"{v * 1e6:.4f} µF"
-    if a >= 1e-9:  return f"{v * 1e9:.4f} nF"
-    return f"{v * 1e12:.4f} pF"
+    return f"{v * 1e9:.4f}"
 
 
 # ── 측정 워커 (행 순차 스윕) ──────────────────────────────────────────────────
@@ -130,12 +135,14 @@ class _MeasurementWorker(QObject):
         frequency: float,
         conditions: List[tuple],   # [(ac_v, dc_v), …] per data row
         hold_s: float,
+        mode: str = "CPD",         # "CPD" (Cp-D) 또는 "CSD" (Cs-D)
     ):
         super().__init__()
         self._instrument  = instrument
         self._frequency   = frequency
         self._conditions  = conditions
         self._hold_s      = hold_s
+        self._mode        = mode
         self._running     = True
 
     def stop(self) -> None:
@@ -144,13 +151,22 @@ class _MeasurementWorker(QObject):
     @pyqtSlot()
     def run(self) -> None:
         try:
+            # 스윕 전 1회 — 측정 함수·주파수·연속 트리거 설정
+            if hasattr(self._instrument, "setup_sweep"):
+                self._instrument.setup_sweep(
+                    frequency=self._frequency,
+                    mode=self._mode,
+                )
+
             for row_idx, (ac_v, dc_v) in enumerate(self._conditions):
                 if not self._running:
                     break
+                # 행별 변경 파라미터(AC 레벨, DC 바이어스)만 전송
                 self._instrument.configure(
                     frequency=self._frequency,
                     ac_level=ac_v,
                     dc_bias=dc_v,
+                    mode=self._mode,
                 )
                 if self._hold_s > 0:
                     time.sleep(self._hold_s)
@@ -188,7 +204,12 @@ class _ResultTable(QTableWidget):
       행 0 : No.*(2행 span) | 전압 인가 조건*(2열 span) | CHIP 1*(2열 span) | …
       행 1 : (merged)       | AC(V)▼  | DC(V)▼         | Cp  | DF | …
       행 2+: 데이터
+
+    시그널:
+      chip_removed() — CHIP 열이 Delete 키로 삭제될 때 emit
     """
+
+    chip_removed = pyqtSignal()   # CHIP 열 삭제 시 emit
 
     def __init__(self, parent: Optional[QWidget] = None):
         # 초기 컬럼: No., AC(V), DC(V), CHIP1-Cp, CHIP1-DF = 5열
@@ -220,6 +241,7 @@ class _ResultTable(QTableWidget):
         self._set_chip_col_widths(1)
         self.setItemDelegate(_NonNegativeDelegate(self))
         self.cellClicked.connect(self._on_cell_clicked)
+        self.itemChanged.connect(self._on_item_changed)
 
     def _set_chip_col_widths(self, chip_num: int) -> None:
         col_cp = self.chip_col_start(chip_num)
@@ -249,10 +271,15 @@ class _ResultTable(QTableWidget):
         for col, label in ((_COL_AC, "AC(V) ▼"), (_COL_DC, "DC(V) ▼")):
             self.setItem(1, col, _make_header_item(label))
 
-        self.setItem(1, _FIXED_COLS,     _make_header_item("Cp"))
+        self.setItem(1, _FIXED_COLS,     _make_header_item("Cp(nF)"))
         self.setItem(1, _FIXED_COLS + 1, _make_header_item("DF"))
 
     # ── AC/DC 헤더 클릭 → 일괄 반영 메뉴 ────────────────────────────
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        """데이터 행의 값이 변경된 후(커밋 완료) 가운데 정렬을 보장한다."""
+        if item.row() >= _HEADER_ROWS:
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """행 1의 AC/DC 헤더 셀 클릭 시 일괄 입력 메뉴를 띄운다."""
         if row == 1 and col in (_COL_AC, _COL_DC):
@@ -314,7 +341,7 @@ class _ResultTable(QTableWidget):
         self.setSpan(0, col_cp, 1, 2)
 
         # 서브 헤더 (행 1)
-        self.setItem(1, col_cp,     _make_header_item("Cp"))
+        self.setItem(1, col_cp,     _make_header_item("Cp(nF)"))
         self.setItem(1, col_cp + 1, _make_header_item("DF"))
 
     # ── 데이터 행 관리 ───────────────────────────────────────────────
@@ -362,7 +389,29 @@ class _ResultTable(QTableWidget):
             super().keyPressEvent(event)
 
     def _delete_selected(self) -> None:
-        """선택 범위 내 편집 가능한 데이터 셀 값을 삭제한다."""
+        """선택 범위에 CHIP 열이 포함되면 해당 CHIP을 삭제·재번호,
+        그 외에는 편집 가능한 데이터 셀 값을 지운다."""
+        # 선택 범위에 포함된 CHIP 번호 수집
+        chip_nums: set[int] = set()
+        for rng in self.selectedRanges():
+            for col in range(rng.leftColumn(), rng.rightColumn() + 1):
+                if col >= _FIXED_COLS:
+                    chip_nums.add((col - _FIXED_COLS) // 2 + 1)
+
+        if chip_nums:
+            # 높은 번호부터 삭제해야 열 인덱스 오프셋이 밀리지 않음
+            for chip_num in sorted(chip_nums, reverse=True):
+                if chip_num < 1 or chip_num > self._chip_count:
+                    continue
+                col_cp = self.chip_col_start(chip_num)
+                self.removeColumn(col_cp + 1)
+                self.removeColumn(col_cp)
+                self._chip_count -= 1
+            self._renumber_chip_headers()
+            self.chip_removed.emit()
+            return
+
+        # CHIP 열이 아닌 경우 — 셀 값 삭제
         for rng in self.selectedRanges():
             for row in range(rng.topRow(), rng.bottomRow() + 1):
                 if row < _HEADER_ROWS:
@@ -373,6 +422,14 @@ class _ResultTable(QTableWidget):
                     item = self.item(row, col)
                     if item is not None:
                         item.setText("")
+
+    def _renumber_chip_headers(self) -> None:
+        """CHIP 열 삭제 후 남은 열의 그룹 헤더(행 0)를 재번호한다."""
+        for i in range(1, self._chip_count + 1):
+            col = self.chip_col_start(i)
+            self.setSpan(0, col, 1, 1)          # 기존 span 해제
+            self.setItem(0, col, _make_header_item(f"CHIP {i}"))
+            self.setSpan(0, col, 1, 2)
 
     def _copy_selection(self) -> None:
         ranges = self.selectedRanges()
@@ -507,20 +564,12 @@ class DCBiasMeasurementPage(QWidget):
         self._gpib_combo.setPlaceholderText("(자동 스캔)")
         self._gpib_combo.currentTextChanged.connect(self._on_gpib_changed)
 
-        self._instr_connect_btn = QPushButton("연결")
-        self._instr_connect_btn.setObjectName("dc-secondary")
-        self._instr_connect_btn.setFixedWidth(46)
-        self._instr_connect_btn.setMinimumHeight(28)
-        self._instr_connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._instr_connect_btn.clicked.connect(self._on_instrument_connect)
-
         self._instr_dot = QLabel("●")
         self._instr_dot.setStyleSheet("color: #94A3B8; font-size: 18px;")
         self._instr_dot.setFixedWidth(22)
         self._instr_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         gpib_row.addWidget(self._gpib_combo, 1)
-        gpib_row.addWidget(self._instr_connect_btn)
         gpib_row.addWidget(self._instr_dot)
         instr_layout.addLayout(gpib_row)
 
@@ -582,11 +631,11 @@ class DCBiasMeasurementPage(QWidget):
         )
         self._lot_edit.setStyleSheet(
             "QLineEdit {"
-            "  border: 1.5px solid #DC2626;"
+            "  border: 1.5px solid #1E3A5F;"
             "  border-radius: 6px;"
             "  padding: 5px 10px;"
             "}"
-            "QLineEdit:focus { border: 2px solid #DC2626; }"
+            "QLineEdit:focus { border: 2px solid #1E3A5F; }"
         )
         self._lot_edit.editingFinished.connect(self._on_lot_editing_finished)
         cond_form.addRow("LOT no.:", self._lot_edit)
@@ -602,6 +651,10 @@ class DCBiasMeasurementPage(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.setFixedHeight(14)
         self._progress_bar.setFormat("행 %v / %m")
+        self._progress_bar.setStyleSheet(
+            "QProgressBar { background: #E2E8F0; border: none; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #1E3A5F; border-radius: 4px; }"
+        )
         self._progress_bar.hide()
         inner.addWidget(self._progress_bar)
 
@@ -678,6 +731,7 @@ class DCBiasMeasurementPage(QWidget):
         layout.addWidget(label)
 
         self._table = _ResultTable()
+        self._table.chip_removed.connect(self._on_chip_removed)
         layout.addWidget(self._table)
         return panel
 
@@ -691,6 +745,7 @@ class DCBiasMeasurementPage(QWidget):
         try:
             engine    = MeasurementEngine(self.settings)
             resources = engine.list_gpib_resources()
+            self._gpib_combo.blockSignals(True)
             self._gpib_combo.clear()
             if resources:
                 self._gpib_combo.addItems(resources)
@@ -699,44 +754,42 @@ class DCBiasMeasurementPage(QWidget):
             else:
                 self._gpib_combo.setEnabled(False)
                 self._set_status("GPIB 리소스 없음.", error=True)
+            self._gpib_combo.blockSignals(False)
+            # 첫 번째 리소스로 자동 연결 시도
+            if resources:
+                self._on_gpib_changed(resources[0])
         except Exception as exc:
+            self._gpib_combo.blockSignals(False)
             self._gpib_combo.clear()
             self._gpib_combo.setEnabled(False)
             self._set_status(f"스캔 실패: {exc}", error=True)
 
     # ── 이벤트 핸들러 ─────────────────────────────────────────────────
 
-    def _on_gpib_changed(self, _: str) -> None:
-        if not self._instrument:
-            return
-        # 다른 리소스 선택 시 연결 해제
+    def _on_gpib_changed(self, resource_name: str) -> None:
+        """콤보 선택 변경 시 기존 연결을 해제하고 새 리소스로 자동 연결 시도."""
+        self._instrument = None
         self._instr_dot.setStyleSheet("color: #94A3B8; font-size: 18px;")
         self._instr_label.setText("계측기: 미연결")
         self._instr_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        self._instrument = None
 
-    def _on_instrument_connect(self) -> None:
-        resource_name = self._gpib_combo.currentText()
         if not resource_name:
-            self._set_status("GPIB 리소스를 먼저 선택하세요.", error=True)
             return
 
-        model = "E4980A"
-
         self._instr_dot.setStyleSheet("color: #F59E0B; font-size: 18px;")
-        self._instr_connect_btn.setEnabled(False)
         self._set_status(f"연결 시도 중… ({resource_name})")
         QApplication.processEvents()
 
         try:
             engine     = MeasurementEngine(self.settings)
-            instrument = engine.load_instrument(model, resource_name)
+            instrument = engine.load_instrument("E4980A", resource_name)
+            idn = instrument.identify()
+            if "E4980" not in idn:
+                raise ConnectionError(f"E4980A가 아닙니다: {idn}")
             self.set_instrument(instrument)
         except Exception as exc:
             self._instr_dot.setStyleSheet("color: #EF4444; font-size: 18px;")
             self._set_status(f"연결 실패: {exc}", error=True)
-        finally:
-            self._instr_connect_btn.setEnabled(True)
 
     def _on_freq_index_changed(self, index: int) -> None:
         """'직접 입력' 선택 시 콤보를 편집 가능하게 전환."""
@@ -849,12 +902,15 @@ class DCBiasMeasurementPage(QWidget):
         self._stop_btn.setEnabled(True)
         self._set_status(f"CHIP {chip} 측정 중… (총 {len(conditions)}행)")
 
+        mode_str = "CPD" if self._mode_combo.currentText() == "Cp-D" else "CSD"
+
         self._thread = QThread()
         self._worker = _MeasurementWorker(
             instrument=self._instrument,
             frequency=freq_hz,
             conditions=conditions,
             hold_s=hold_s,
+            mode=mode_str,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -869,6 +925,13 @@ class DCBiasMeasurementPage(QWidget):
         if self._worker:
             self._worker.stop()
         self._set_status("측정 중지됨.")
+
+    @pyqtSlot()
+    def _on_chip_removed(self) -> None:
+        """테이블에서 CHIP 열이 삭제되면 _next_chip을 현재 열 수에 맞게 동기화."""
+        self._next_chip  = self._table.chip_count() + 1
+        self._meas_count = self._table.chip_count()
+        self._count_label.setText(f"측정 횟수: {self._meas_count}회")
 
     def _on_clear(self) -> None:
         if self._thread and self._thread.isRunning():

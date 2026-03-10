@@ -83,7 +83,35 @@ client/.venv/bin/python client/app/main.py
 > - NI-VISA (권장): Keysight/NI 사이트에서 설치
 > - pyvisa-py (무료, USB-GPIB 어댑터 필요): `pip install pyvisa-py` 로 설치됨
 
-### 3. 개발용 샘플 데이터 투입
+### 3. 클라이언트 exe 빌드 (Windows)
+
+**전제 조건**: 클라이언트 가상환경이 이미 설정되어 있어야 합니다 (`setup_client.sh` 실행 완료).
+
+```bash
+# client/ 디렉터리에서 실행
+cd client
+.venv/Scripts/pip install pyinstaller   # 최초 1회
+
+.venv/Scripts/pyinstaller build/client.spec
+```
+
+빌드가 완료되면 `client/dist/DCClient.exe` 가 생성됩니다 (약 40 MB).
+
+> **오프라인 데모 계정**: `ID: admin` / `PW: admin1111` 으로 로그인하면 서버 없이도 GUI 전체 기능을 확인할 수 있습니다.
+
+**빌드 후 배포 시 함께 배포할 파일:**
+```
+DCClient.exe
+client/.env          ← API_BASE_URL, API_TIMEOUT 설정
+```
+
+`client/.env` 예시:
+```
+API_BASE_URL=http://<서버IP>:8000
+API_TIMEOUT=30
+```
+
+### 4. 개발용 샘플 데이터 투입
 
 ```bash
 mysql -u dc_user -p dc_db < db/seeds/sample_data.sql

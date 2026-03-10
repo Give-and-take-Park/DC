@@ -18,8 +18,8 @@ class GPIBConnectionManager:
         self._rm = pyvisa.ResourceManager()
 
     def list_resources(self) -> List[str]:
-        """연결된 GPIB 리소스 주소 목록을 반환한다."""
-        return list(self._rm.list_resources())
+        """연결된 GPIB 리소스 주소 목록을 반환한다 (GPIB 버스만 필터)."""
+        return list(self._rm.list_resources("GPIB?*::INSTR"))
 
     def open(self, resource_name: str):
         """리소스를 열고 pyvisa Resource 객체를 반환한다."""

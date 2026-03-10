@@ -140,12 +140,23 @@ class LoginDialog(QDialog):
 
         root.addLayout(h_layout)
 
+    # ── 오프라인 데모 계정 ───────────────────────────────────────────
+    _DEMO_USER = "admin"
+    _DEMO_PASS = "admin1111"
+
     def _on_login(self) -> None:
         username = self._username_edit.text().strip()
         password = self._password_edit.text()
 
         if not username or not password:
             self._show_error("사용자명과 비밀번호를 입력하세요.")
+            return
+
+        # 오프라인 데모 계정 — 서버 인증 없이 바로 진입
+        if username == self._DEMO_USER and password == self._DEMO_PASS:
+            self.token    = "demo"
+            self.username = username
+            self.accept()
             return
 
         self._login_btn.setEnabled(False)
