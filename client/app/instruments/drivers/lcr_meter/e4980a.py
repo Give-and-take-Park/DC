@@ -36,21 +36,16 @@ class KeysightE4980A(BaseLCRMeter):
         return self._resource.query("*IDN?").strip()
 
     # ── 파라미터 설정 ────────────────────────────────────────────
-    def setup_sweep(
-        self,
-        frequency: float = 1000.0,
-        mode: str = "CPD",
-    ) -> None:
+    def setup_sweep(self, mode: str = "CPD") -> None:
         """스윕 시작 전 1회 호출 — 스윕 내내 변하지 않는 파라미터를 설정한다.
 
           :FUNC:IMP:TYPE <mode> — 측정 함수 (CPD / CSD)
-          :FREQ <freq>          — 측정 주파수 (20 Hz – 2 MHz)
           :BIAS:STATe ON        — DC 바이어스 출력 활성화
           :INIT:CONT ON         — 연속 측정 모드 활성화 (FETC?가 항상 최신값 반환)
                                    ※ 루프마다 재전송하면 트리거가 리셋되므로 1회만 전송
+        주파수는 행별로 달라질 수 있으므로 configure()에서 행마다 전송한다.
         """
         self._resource.write(f":FUNC:IMP:TYPE {mode}")  # 측정 함수 (CPD / CSD)
-        self._resource.write(f":FREQ {frequency}")       # 주파수 (Hz) — 스윕 내 고정
         self._resource.write(":BIAS:STATe ON")           # DC 바이어스 출력 ON
         self._resource.write(":INIT:CONT ON")            # 연속 측정 모드 활성화
 
@@ -62,14 +57,13 @@ class KeysightE4980A(BaseLCRMeter):
         mode: str = "CPD",
         **kwargs,
     ) -> None:
-        """스윕 루프 내 각 행마다 호출 — 행별로 달라지는 AC/DC 조건만 전송한다.
+        """스윕 루프 내 각 행마다 호출 — 행별로 달라지는 파라미터를 전송한다.
 
+          :FREQ <freq>   — 측정 주파수 (20 Hz – 2 MHz, 행별 지정)
           :VOLT <level>  — AC 신호 레벨 (5 mV – 2 V rms)
           :BIAS:VOLT <v> — DC 바이어스 전압 (0 – ±40 V)
-
-        ※ :FUNC:IMP:TYPE / :FREQ / :BIAS:STATe ON / :INIT:CONT ON 은
-           setup_sweep() 에서 1회 설정하므로 여기서는 전송하지 않음.
         """
+        self._resource.write(f":FREQ {frequency}")       # 주파수 (Hz) — 행별 설정
         self._resource.write(f":VOLT {ac_level}")        # AC 레벨 (V rms)
         self._resource.write(f":BIAS:VOLT {dc_bias}")    # DC 바이어스 전압 (V)
 
