@@ -96,11 +96,13 @@ class _NonNegativeDelegate(QStyledItemDelegate):
             editor.setStyleSheet("QLineEdit { padding: 0px 2px; font-size: 12px; }")
         return editor
 
+    def initStyleOption(self, option, index) -> None:  # type: ignore[override]
+        super().initStyleOption(option, index)
+        if index.row() >= _HEADER_ROWS:
+            option.displayAlignment = Qt.AlignmentFlag.AlignCenter
+
     def setModelData(self, editor, model, index):  # type: ignore[override]
         super().setModelData(editor, model, index)
-        # ※ model.setData(TextAlignmentRole)를 여기서 호출하면 커밋 사이클 도중
-        #   dataChanged 시그널이 발생해 "commitData … does not belong" 경고가 뜬다.
-        #   정렬은 _ResultTable.itemChanged 슬롯에서 커밋 완료 후 처리한다.
 
 
 # ── 헤더 셀 아이템 생성 ───────────────────────────────────────────────────────
@@ -240,7 +242,6 @@ class _ResultTable(QTableWidget):
         self._set_chip_col_widths(1)
         self.setItemDelegate(_NonNegativeDelegate(self))
         self.cellClicked.connect(self._on_cell_clicked)
-        self.itemChanged.connect(self._on_item_changed)
 
     def _set_chip_col_widths(self, chip_num: int) -> None:
         col_cp = self.chip_col_start(chip_num)
@@ -279,11 +280,6 @@ class _ResultTable(QTableWidget):
         self.setItem(1, _FIXED_COLS + 1, _make_header_item("DF"))
 
     # ── AC/DC 헤더 클릭 → 일괄 반영 메뉴 ────────────────────────────
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        """데이터 행의 값이 변경된 후(커밋 완료) 가운데 정렬을 보장한다."""
-        if item.row() >= _HEADER_ROWS:
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """행 1의 조건 헤더 셀 클릭 시 일괄 입력 메뉴를 띄운다."""
         if row == 1 and col in (_COL_HOLD, _COL_FREQ, _COL_AC, _COL_DC):
@@ -399,7 +395,9 @@ class _ResultTable(QTableWidget):
             next_row = idx.row() + 1
             if next_row >= self.rowCount():
                 next_row = self.append_data_row()
-            super().keyPressEvent(event)  # 에디터 커밋 후 닫기 (EditingState에서 이동 없음)
+            # super() 를 호출하지 않음: AnyKeyPressed 트리거로 인해 새 에디터가 열렸다가
+            # Enter 즉시 커밋되는 이중 commitData 경고가 발생하기 때문.
+            # 에디터 커밋은 QLineEdit.returnPressed → delegate 연결이 처리한다.
             self.setCurrentCell(next_row, idx.column())
         else:
             super().keyPressEvent(event)
@@ -796,17 +794,87 @@ class DCBiasMeasurementPage(QWidget):
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(8)
 
+        # ── 헤더: 제목 + 아이콘 버튼 ─────────────────────────────────
+        header_row = QHBoxLayout()
+        header_row.setSpacing(4)
+
         label = QLabel("측정 결과")
         lf = QFont("Segoe UI", 12)
         lf.setBold(True)
         label.setFont(lf)
         label.setStyleSheet("color: #1E293B;")
-        layout.addWidget(label)
+        header_row.addWidget(label)
+        header_row.addStretch()
+
+        _ICON_STYLE = (
+            "QPushButton {"
+            "  color: #1E3A5F;"
+            "  background: transparent;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 4px;"
+            "  font-size: 13px;"
+            "  min-width: 28px;"
+            "  max-width: 28px;"
+            "  min-height: 26px;"
+            "  max-height: 26px;"
+            "}"
+            "QPushButton:hover   { background: #EFF6FF; border-color: #1E3A5F; }"
+            "QPushButton:pressed { background: #DBEAFE; }"
+            "QPushButton:disabled { color: #94A3B8; border-color: #E2E8F0; }"
+        )
+
+        def _icon_btn(text: str, tooltip: str) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setToolTip(tooltip)
+            btn.setStyleSheet(_ICON_STYLE)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            return btn
+
+        btn_add  = _icon_btn("+",  "행 추가")
+        btn_del  = _icon_btn("−",  "선택 행 삭제 (미선택 시 마지막 행)")
+        self._tbl_start_btn = _icon_btn("▶", "측정 시작")
+        self._tbl_stop_btn  = _icon_btn("■", "중지")
+        btn_reset           = _icon_btn("↺", "테이블 초기화")
+
+        self._tbl_stop_btn.setEnabled(False)
+
+        btn_add.clicked.connect(self._on_tbl_add_row)
+        btn_del.clicked.connect(self._on_tbl_del_row)
+        self._tbl_start_btn.clicked.connect(self._on_start)
+        self._tbl_stop_btn.clicked.connect(self._on_stop)
+        btn_reset.clicked.connect(self._on_clear)
+
+        for btn in (btn_add, btn_del, self._tbl_start_btn,
+                    self._tbl_stop_btn, btn_reset):
+            header_row.addWidget(btn)
+
+        layout.addLayout(header_row)
 
         self._table = _ResultTable()
         self._table.chip_removed.connect(self._on_chip_removed)
         layout.addWidget(self._table)
         return panel
+
+    # ── 결과 패널 아이콘 버튼 핸들러 ─────────────────────────────────
+
+    def _on_tbl_add_row(self) -> None:
+        """'+' 버튼 — 새 데이터 행 추가."""
+        self._table.append_data_row()
+
+    def _on_tbl_del_row(self) -> None:
+        """'−' 버튼 — 선택된 칸의 행 삭제, 미선택 시 마지막 행 삭제."""
+        rows: set[int] = set()
+        for rng in self._table.selectedRanges():
+            for row in range(max(rng.topRow(), _HEADER_ROWS), rng.bottomRow() + 1):
+                rows.add(row)
+        if not rows:
+            last = self._table.rowCount() - 1
+            if last >= _HEADER_ROWS:
+                rows = {last}
+        for row in sorted(rows, reverse=True):
+            self._table.removeRow(row)
+        self._table._renumber_rows()
 
     # ── 공개 메서드: 페이지 진입 시 자동 GPIB 스캔 ───────────────────
     def start_gpib_scan(self) -> None:
@@ -950,6 +1018,8 @@ class DCBiasMeasurementPage(QWidget):
         self._progress_bar.show()
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
+        self._tbl_start_btn.setEnabled(False)
+        self._tbl_stop_btn.setEnabled(True)
         self._set_status(f"CHIP {chip} 측정 중… (총 {len(conditions)}행)")
 
         mode_str = "CPD" if self._mode_combo.currentText() == "Cp-D" else "CSD"
@@ -1037,6 +1107,8 @@ class DCBiasMeasurementPage(QWidget):
         self._count_label.setText(f"측정 횟수: {self._meas_count}회")
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._tbl_start_btn.setEnabled(True)
+        self._tbl_stop_btn.setEnabled(False)
         self._progress_bar.hide()
         self._export_btn.setEnabled(True)
         msg = f"CHIP {self._meas_count} 측정 완료."
@@ -1047,6 +1119,8 @@ class DCBiasMeasurementPage(QWidget):
     def _on_meas_error(self, msg: str) -> None:
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._tbl_start_btn.setEnabled(True)
+        self._tbl_stop_btn.setEnabled(False)
         self._progress_bar.hide()
         # 실패한 CHIP 열이 추가된 경우 _next_chip을 되돌리지 않음
         # (사용자가 초기화 후 재시도)
