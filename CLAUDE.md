@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-MLCC 계측기 데이터 수집 시스템. Python venv + systemd 기반 (Docker 미사용).
+Raffaello Inspection & Metrology System. Python venv + systemd 기반 (Docker 미사용).
 
 ## 개발 명령어
 
@@ -31,7 +31,7 @@ mysql -u dc_user -p dc_db < db/seeds/sample_data.sql
 
 ### 빌드
 ```bash
-cd client && .venv/bin/pyinstaller build/client.spec  # exe 빌드
+cd client && .venv/bin/pyinstaller build/client.spec  # → dist/RIMS.exe 생성
 ```
 
 ### 초기 관리자 비밀번호 해시 생성
@@ -45,19 +45,19 @@ cd server && ../.venv/bin/python -c \
 
 ```
 main.py 실행
-    └→ LoginDialog (POST /api/v1/auth/login → JWT 수신)
-         └→ MainWindow (QStackedWidget)
-              ├→ [0] HomePage — 측정 항목 카드 그리드 (기본 화면)
-              ├→ [1] DCBiasMeasurementPage — DC Bias 전압 스윕 (전용 페이지)
+    └→ LoginDialog (Knox ID 입력 → api_client.log_access() fire-and-forget)
+         └→ MainWindow (QStackedWidget, 창 타이틀: RIMS)
+              ├→ [0] HomePage — 3종 모듈 카드 그리드 (기본 화면)
+              ├→ [1] DCBiasMeasurementPage — DC Bias 전용 페이지
               └→ [2+] MeasurementPage — 기타 측정 항목 (카드 클릭 시 생성)
-                   └→ 뒤로가기 → HomePage 복귀
+                   └→ 뒤로가기 → HomePage 복귀 (헤더 '홈으로' 버튼)
 ```
 
 ## 아키텍처
 
 ```
 [클라이언트]
-main.py → LoginDialog → JWT 획득
+main.py → LoginDialog → Knox ID 입력 → log_access() fire-and-forget
                ↓
           MainWindow (QStackedWidget)
                ↓ 카드 클릭
@@ -88,6 +88,30 @@ GET  /                       → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 - **단위 정규화**: `server/app/services/normalizer.py`에서 수신값을 표준 단위(F, Ω, V)로 변환 후 저장
 - **측정 함수**: E4980A는 `CPD` 모드(Cp + 손실계수 D) 사용 — MLCC DC Bias 평가 표준
 - **파일 업로드 경로**: `{UPLOAD_DIR}/optical/{uuid}.{ext}` (서버 로컬 디스크)
+- **클라이언트 앱 이름**: Raffaello Inspection & Metrology System (약칭 **RIMS**)
+  - 창 프레임 타이틀: `RIMS`
+  - 헤더: `RIMS` (35px bold) + `Raffaello Inspection & Metrology System` (20px normal)
+  - 로그인 카드 타이틀: `Raffaello Inspection` / `& Metrology System` (2줄)
+  - 빌드 exe: `RIMS.exe`
+  - 창 프레임 아이콘: `client/app/ui/styles/icon.ico`
+
+## DC Bias 측정 결과 테이블 (dc_bias_page.py)
+
+| 컬럼 | 헤더 표시 | 너비 |
+|------|-----------|------|
+| No. | No. | 45px |
+| 유지 시간 | Time(s) ▼ | 85px |
+| 주파수 | Freq.(Hz) ▼ | 85px |
+| AC 레벨 | AC(V) ▼ | 85px |
+| DC 바이어스 | DC(V) ▼ | 85px |
+| CHIP n 정전용량 | Cp(nF) | 85px |
+| CHIP n 손실계수 | DF | 85px |
+
+- 모든 입력 셀: 숫자(0 이상 실수)만 허용
+- Enter: 다음 행 이동 (마지막 행에서 자동 추가)
+- Delete / Backspace: 선택 셀 삭제
+- Ctrl+C: 선택 범위 복사
+- CSV 헤더: `No., Time(s), Freq.(Hz), AC(V), DC(V), CHIP1_Cp, CHIP1_DF, …`
 
 ## 계측기 드라이버 추가
 

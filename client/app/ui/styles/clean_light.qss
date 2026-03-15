@@ -1,5 +1,5 @@
 /* ============================================================
-   Clean Light Theme — MLCC Data Collector
+   Clean Light Theme — Raffaello Inspection & Metrology System
    Palette:
      Background : #F4F6F9
      Header     : #1E3A5F
@@ -91,6 +91,21 @@ QPushButton#measurement-card:hover {
 
 QPushButton#measurement-card:pressed {
     background: #DBEAFE;
+}
+
+/* ---------- 잠금 카드 (추후 오픈 예정) ---------- */
+QPushButton#measurement-card-locked {
+    background: #F8FAFC;
+    border: 1.5px solid #E2E8F0;
+    border-radius: 14px;
+    color: #94A3B8;
+    text-align: left;
+    padding: 0px;
+}
+
+QPushButton#measurement-card-locked:hover {
+    background: #F1F5F9;
+    border: 1.5px solid #CBD5E1;
 }
 
 /* ---------- 기본 버튼 ---------- */

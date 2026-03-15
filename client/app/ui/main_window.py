@@ -4,8 +4,10 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QStatusBar, QApplication,
 )
+import threading
+
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 from app.config.settings import Settings
 from app.core.api_client import APIClient
@@ -17,7 +19,8 @@ from app.ui.pages.dc_bias_page import DCBiasMeasurementPage
 class MainWindow(QMainWindow):
     """메인 윈도우 — 헤더 + QStackedWidget + 상태바"""
 
-    window_closed = pyqtSignal()   # 창이 닫힐 때 main.py 이벤트 루프에 통보
+    window_closed = pyqtSignal()        # 창이 닫힐 때 main.py 이벤트 루프에 통보
+    _server_ok    = pyqtSignal(bool)   # 백그라운드 서버 체크 결과 → UI 갱신용
 
     def __init__(self, settings: Settings, api_client: APIClient, username: str = ""):
         super().__init__()
@@ -27,12 +30,17 @@ class MainWindow(QMainWindow):
         self.is_logout: bool = False   # 로그아웃으로 닫힌 경우 True
         self._measurement_pages: dict[str, int] = {}  # characteristic → stack index
 
-        self.setWindowTitle("MLCC Data Collector")
+        self.setWindowTitle("RIMS")
         self.setMinimumSize(960, 640)
         self.resize(1200, 760)
 
+        _icon = Path(__file__).parent / "styles" / "icon.ico"
+        if _icon.exists():
+            self.setWindowIcon(QIcon(str(_icon)))
+
         self._load_stylesheet()
         self._init_ui()
+        self._server_ok.connect(self._apply_server_status)
         self._start_status_timer()
 
     # ── 스타일시트 ───────────────────────────────────────────────
@@ -77,7 +85,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(20)
 
         # 타이틀 (좌)
-        title_label = QLabel("MLCC Data Collector")
+        title_label = QLabel(
+            "<span style='font-size:35px; font-weight:bold; color:#FFFFFF;'>RIMS</span>"
+            "<span style='font-size:20px; font-weight:normal; color:#FFFFFF;'>"
+            "&nbsp;&nbsp;Raffaello Inspection &amp; Metrology System</span>"
+        )
         title_label.setObjectName("header-title")
         layout.addWidget(title_label)
 
@@ -182,11 +194,20 @@ class MainWindow(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_server_status)
         self._status_timer.start(15_000)  # 15초마다 체크
-        self._update_server_status()
+        # 초기 확인을 2초 후로 지연 — 페이드인 애니메이션 완료 후 실행
+        QTimer.singleShot(2000, self._update_server_status)
 
     @pyqtSlot()
     def _update_server_status(self) -> None:
+        """서버 상태 확인을 백그라운드 스레드에서 실행한다 (UI 스레드 블로킹 방지)."""
+        threading.Thread(target=self._check_server_bg, daemon=True).start()
+
+    def _check_server_bg(self) -> None:
         ok = self.api_client.check_server()
+        self._server_ok.emit(ok)
+
+    @pyqtSlot(bool)
+    def _apply_server_status(self, ok: bool) -> None:
         if ok:
             self._server_status_label.setText("● 서버: 연결됨")
             self._server_status_label.setStyleSheet("color: #4ADE80; font-size: 13px;")

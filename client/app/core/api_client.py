@@ -20,15 +20,17 @@ class APIClient:
             return {"Authorization": f"Bearer {self._token}"}
         return {}
 
-    def login(self, username: str, password: str) -> dict:
-        """서버에 로그인하고 JWT 토큰 응답을 반환한다."""
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/api/v1/auth/login",
-                json={"username": username, "password": password},
+    def log_access(self, username: str) -> None:
+        """접속 로그를 서버에 전송한다. (인증 불필요, 실패 시 호출자가 무시)"""
+        from datetime import datetime
+        with httpx.Client(timeout=3.0) as client:
+            client.post(
+                f"{self.base_url}/api/v1/auth/access-log",
+                json={
+                    "username": username,
+                    "accessed_at": datetime.now().isoformat(),
+                },
             )
-            response.raise_for_status()
-            return response.json()
 
     def send_measurements(self, payload: dict) -> dict:
         """MLCC 측정 데이터를 서버에 전송한다."""

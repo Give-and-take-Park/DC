@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import QObject, QPoint, QRegularExpression, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRegularExpression, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QApplication,
@@ -89,9 +89,7 @@ class _NonNegativeDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):  # type: ignore[override]
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
-            # 유지 시간·주파수 컬럼은 "1K", "100K" 등 자유 입력 허용
-            if index.column() not in (_COL_HOLD, _COL_FREQ):
-                editor.setValidator(QRegularExpressionValidator(self._PATTERN, editor))
+            editor.setValidator(QRegularExpressionValidator(self._PATTERN, editor))
             editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
             editor.setStyleSheet("QLineEdit { padding: 0px 2px; font-size: 12px; }")
         return editor
@@ -103,6 +101,29 @@ class _NonNegativeDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor, model, index):  # type: ignore[override]
         super().setModelData(editor, model, index)
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        # [경고 발생 경로 분석]
+        # super().eventFilter(KeyPress_Enter) 내부 C++ 처리 순서:
+        #   ① emit commitData(editor)            ← 데이터 저장 (정상)
+        #   ② emit closeEditor(editor)            ← editor를 map에서 제거 후 hide()
+        #   ③ editor.hide() → FocusOut 동기 발생 ← 이 eventFilter 재진입
+        #   ④ super().eventFilter(FocusOut) → commitData 재발행 → map에 없음 → 경고!
+        #
+        # _handling_return 플래그를 KeyPress_Return 처리 중 True로 설정해두면
+        # ③의 FocusOut 재진입 시 False를 반환해 commitData 재발행을 차단한다.
+        # (FocusOut은 hide() 안에서 동기적으로 발생하므로 플래그가 반드시 True임)
+        if event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._handling_return = True
+                result = super().eventFilter(obj, event)
+                self._handling_return = False
+                return result
+        if event.type() == QEvent.Type.FocusOut:
+            if getattr(self, '_handling_return', False):
+                return False  # Key_Return 처리 중 FocusOut → commitData 재발행 차단
+        return super().eventFilter(obj, event)
 
 
 # ── 헤더 셀 아이템 생성 ───────────────────────────────────────────────────────
@@ -225,7 +246,8 @@ class _ResultTable(QTableWidget):
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked
-            | QTableWidget.EditTrigger.AnyKeyPressed
+            # AnyKeyPressed 미사용: Enter 재전달 시 이미 닫힌 에디터에
+            # commitData가 재호출되어 경고 발생 → keyPressEvent에서 직접 처리
         )
         self.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.setGridStyle(Qt.PenStyle.SolidLine)
@@ -235,10 +257,10 @@ class _ResultTable(QTableWidget):
             "QTableWidget::item:selected { background: #DBEAFE; color: #1E3A5F; }"
         )
         self.setColumnWidth(_COL_NO,   45)
-        self.setColumnWidth(_COL_HOLD, 80)
+        self.setColumnWidth(_COL_HOLD, 85)
         self.setColumnWidth(_COL_FREQ, 85)
-        self.setColumnWidth(_COL_AC,   72)
-        self.setColumnWidth(_COL_DC,   72)
+        self.setColumnWidth(_COL_AC,   85)
+        self.setColumnWidth(_COL_DC,   85)
         self._set_chip_col_widths(1)
         self.setItemDelegate(_NonNegativeDelegate(self))
         self.cellClicked.connect(self._on_cell_clicked)
@@ -246,9 +268,9 @@ class _ResultTable(QTableWidget):
     def _set_chip_col_widths(self, chip_num: int) -> None:
         col_cp = self.chip_col_start(chip_num)
         if col_cp < self.columnCount():
-            self.setColumnWidth(col_cp,     90)   # Cp
+            self.setColumnWidth(col_cp,     85)   # Cp
         if col_cp + 1 < self.columnCount():
-            self.setColumnWidth(col_cp + 1, 75)   # DF
+            self.setColumnWidth(col_cp + 1, 85)   # DF
 
     # ── 헤더 행 구성 ─────────────────────────────────────────────────
     def _build_header_rows(self) -> None:
@@ -267,10 +289,10 @@ class _ResultTable(QTableWidget):
         self.setItem(0, _FIXED_COLS, _make_header_item("CHIP 1"))
         self.setSpan(0, _FIXED_COLS, 1, 2)
 
-        # 행 1: 유지 시간▼, 주파수▼, AC(V)▼, DC(V)▼, Cp(nF), DF
+        # 행 1: Time▼, Freq▼, AC(V)▼, DC(V)▼, Cp(nF), DF
         for col, label in (
-            (_COL_HOLD, "유지 시간(s) ▼"),
-            (_COL_FREQ, "주파수(Hz) ▼"),
+            (_COL_HOLD, "Time(s) ▼"),
+            (_COL_FREQ, "Freq.(Hz) ▼"),
             (_COL_AC,   "AC(V) ▼"),
             (_COL_DC,   "DC(V) ▼"),
         ):
@@ -345,8 +367,8 @@ class _ResultTable(QTableWidget):
 
         self.insertColumn(col_cp)
         self.insertColumn(col_cp + 1)
-        self.setColumnWidth(col_cp,     90)
-        self.setColumnWidth(col_cp + 1, 75)
+        self.setColumnWidth(col_cp,     85)
+        self.setColumnWidth(col_cp + 1, 85)
 
         # 그룹 헤더 (행 0)
         self.setItem(0, col_cp, _make_header_item(f"CHIP {chip_num}"))
@@ -380,14 +402,47 @@ class _ResultTable(QTableWidget):
         for _ in range(_INIT_ROWS):
             self.append_data_row()
 
+    # ── 에디터 닫기 / commitData 오버라이드 ─────────────────────────
+    def closeEditor(self, editor, hint) -> None:  # type: ignore[override]
+        """closeEditor 실행 중 발생하는 이중 commitData를 차단한다.
+
+        Qt 내부 순서:
+          1. delegate.eventFilter(Key_Return) →
+               emit commitData(editor)   → commitData 슬롯 호출 (데이터 저장)
+               emit closeEditor(editor)  → 이 메서드 호출
+          2. super().closeEditor() 내부에서 editor.hide() 실행
+          3. hide()가 FocusOut 이벤트를 발생시킴
+          4. delegate.eventFilter(FocusOut) →
+               emit commitData(editor)   → 에디터는 이미 추적 맵에서 제거 → 경고
+
+        _closing_editor 플래그를 True 로 설정해 두면 4단계에서 호출되는
+        commitData 슬롯이 즉시 반환되어 경고가 발생하지 않는다.
+        데이터는 1단계에서 이미 저장되었으므로 손실 없음.
+        """
+        if editor is not None:
+            editor.removeEventFilter(self.itemDelegate())
+        self._closing_editor = True
+        try:
+            super().closeEditor(editor, hint)
+        finally:
+            self._closing_editor = False
+
+    def commitData(self, editor) -> None:  # type: ignore[override]
+        """closeEditor 진행 중 재호출되는 commitData 경고를 차단한다."""
+        if getattr(self, '_closing_editor', False):
+            return  # 데이터는 이미 저장됨 — 이중 호출 무시
+        super().commitData(editor)
+
     # ── 키 이벤트 ────────────────────────────────────────────────────
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         key = event.key()
         if event.matches(QKeySequence.StandardKey.Copy):
             self._copy_selection()
-        elif key == Qt.Key.Key_Delete:
+            return
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected()
-        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             idx = self.currentIndex()
             if not idx.isValid() or idx.row() < _HEADER_ROWS:
                 super().keyPressEvent(event)
@@ -395,12 +450,28 @@ class _ResultTable(QTableWidget):
             next_row = idx.row() + 1
             if next_row >= self.rowCount():
                 next_row = self.append_data_row()
-            # super() 를 호출하지 않음: AnyKeyPressed 트리거로 인해 새 에디터가 열렸다가
-            # Enter 즉시 커밋되는 이중 commitData 경고가 발생하기 때문.
-            # 에디터 커밋은 QLineEdit.returnPressed → delegate 연결이 처리한다.
             self.setCurrentCell(next_row, idx.column())
-        else:
-            super().keyPressEvent(event)
+            return
+        # 출력 가능한 문자 키 → 에디터를 직접 열고 해당 키를 전달
+        # (AnyKeyPressed 대체: Enter 재전달에 의한 이중 commitData 경고 방지)
+        text = event.text()
+        if (
+            text
+            and text.isprintable()
+            and not event.modifiers() & (
+                Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+        ):
+            idx = self.currentIndex()
+            if idx.isValid() and idx.row() >= _HEADER_ROWS:
+                self.edit(idx)
+                focused = QApplication.focusWidget()
+                if focused is not None and focused is not self:
+                    QApplication.sendEvent(focused, event)
+                return
+        super().keyPressEvent(event)
 
     def _delete_selected(self) -> None:
         """Delete 키 처리 — 우선순위:
@@ -829,6 +900,9 @@ class DCBiasMeasurementPage(QWidget):
             btn.setStyleSheet(_ICON_STYLE)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            font = btn.font()
+            font.setBold(True)
+            btn.setFont(font)
             return btn
 
         btn_add  = _icon_btn("+",  "행 추가")
@@ -1155,7 +1229,7 @@ class DCBiasMeasurementPage(QWidget):
         chip_count = self._table.chip_count()
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-            headers = ["No.", "유지 시간(s)", "주파수(Hz)", "AC(V)", "DC(V)"]
+            headers = ["No.", "Time(s)", "Freq.(Hz)", "AC(V)", "DC(V)"]
             for i in range(1, chip_count + 1):
                 headers += [f"CHIP{i}_Cp", f"CHIP{i}_DF"]
             writer.writerow(headers)

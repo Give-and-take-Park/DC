@@ -1,0 +1,24 @@
+RIMS
+- Raffaello Inspection & Metrology System
+
+RUMIS
+- Raffaello Unified Metrology & Inspection System
+
+RAMS
+- Raffaello Automated Metrology System
+
+RAMIS
+Raffaello Automated Metrology & Inspection System
+
+RUMS
+- Raffaello Unified Metrology System
+- Raffaello Unified Measurement System
+
+RULS
+- Raffaello Unified Laboratory System
+
+LUMOS
+- Laboratory Unified Metrology & Optical(Observation) System
+
+
+

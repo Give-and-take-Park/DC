@@ -47,7 +47,8 @@ exe = EXE(
     a.binaries,
     a.zipfiles,
     a.datas,
-    name="DCClient",
+    icon="../app/ui/styles/icon.ico",
+    name="RIMS",
     debug=False,
     strip=False,
     upx=False,       # UPX 압축 비활성화 — Qt 플러그인 지연 로딩 시 버벅거림 방지

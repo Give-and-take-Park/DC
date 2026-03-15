@@ -1,33 +1,42 @@
+import threading
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QWidget, QSizePolicy,
+    QPushButton, QWidget, QProgressBar,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QKeyEvent
+from PyQt6.QtCore import Qt, QPropertyAnimation, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon, QKeyEvent
 
 from app.core.api_client import APIClient
 from app.config.settings import Settings
 
 
 class LoginDialog(QDialog):
-    """사용자 인증 다이얼로그.
+    """Knox ID 입력 다이얼로그.
 
-    로그인 성공 시 self.token, self.username이 설정된 상태로 accept()된다.
+    Knox ID 입력 후 서버에 접속 로그를 전송하고 login_ready 시그널을 emit한다.
+    인증 결과와 무관하게 즉시 메인 화면으로 전환한다.
     """
+
+    login_ready = pyqtSignal(str)   # Knox ID (username)
 
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.api_client = APIClient(settings)
-        self.token: str = ""
+        self.token: str = "knox"
         self.username: str = ""
 
-        self.setWindowTitle("MLCC Data Collector — 로그인")
+        self.setWindowTitle("RIMS")
         self.setMinimumSize(960, 640)
         self.resize(1200, 760)
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
         )
+        _icon = Path(__file__).parent / "styles" / "icon.ico"
+        if _icon.exists():
+            self.setWindowIcon(QIcon(str(_icon)))
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -38,7 +47,7 @@ class LoginDialog(QDialog):
         # ── 카드 컨테이너 (중앙 정렬) ──────────────────────────────
         card = QWidget()
         card.setObjectName("card")
-        card.setFixedWidth(480)   # 창 크기와 무관하게 고정
+        card.setFixedWidth(480)
         card.setStyleSheet(
             "QWidget#card {"
             "  background: white;"
@@ -51,14 +60,14 @@ class LoginDialog(QDialog):
         card_layout.setSpacing(18)
 
         # 타이틀
-        title = QLabel("MLCC Data Collector")
+        title = QLabel("Raffaello Inspection\n& Metrology System")
         title_font = QFont("Segoe UI", 20)
         title_font.setBold(True)
         title.setFont(title_font)
         title.setStyleSheet("color: #1E3A5F;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        sub = QLabel("계정으로 로그인하세요")
+        sub = QLabel("Knox ID를 입력하세요")
         sub.setStyleSheet("color: #64748B; font-size: 15px;")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -78,16 +87,10 @@ class LoginDialog(QDialog):
         )
 
         self._username_edit = QLineEdit()
-        self._username_edit.setPlaceholderText("사용자명")
+        self._username_edit.setPlaceholderText("Knox ID")
         self._username_edit.setMinimumHeight(48)
         self._username_edit.setStyleSheet(_input_style)
-
-        self._password_edit = QLineEdit()
-        self._password_edit.setPlaceholderText("비밀번호")
-        self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password_edit.setMinimumHeight(48)
-        self._password_edit.setStyleSheet(_input_style)
-        self._password_edit.returnPressed.connect(self._on_login)
+        self._username_edit.returnPressed.connect(self._on_login)
 
         # 오류 메시지
         self._error_label = QLabel("")
@@ -117,13 +120,31 @@ class LoginDialog(QDialog):
         self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._login_btn.clicked.connect(self._on_login)
 
+        # 로딩 프로그레스바 (인디케이터 모드)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 0)   # indeterminate (marquee) 모드
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setStyleSheet(
+            "QProgressBar {"
+            "  background: #E2E8F0;"
+            "  border: none;"
+            "  border-radius: 2px;"
+            "}"
+            "QProgressBar::chunk {"
+            "  background: #1E3A5F;"
+            "  border-radius: 2px;"
+            "}"
+        )
+        self._progress_bar.hide()
+
         card_layout.addWidget(title)
         card_layout.addWidget(sub)
         card_layout.addSpacing(8)
         card_layout.addWidget(self._username_edit)
-        card_layout.addWidget(self._password_edit)
         card_layout.addWidget(self._error_label)
         card_layout.addWidget(self._login_btn)
+        card_layout.addWidget(self._progress_bar)
 
         # 외부 여백
         outer = QVBoxLayout()
@@ -140,52 +161,63 @@ class LoginDialog(QDialog):
 
         root.addLayout(h_layout)
 
-    # ── 오프라인 데모 계정 ───────────────────────────────────────────
-    _DEMO_USER = "admin"
-    _DEMO_PASS = "admin1111"
-
     def _on_login(self) -> None:
-        username = self._username_edit.text().strip()
-        password = self._password_edit.text()
-
-        if not username or not password:
-            self._show_error("사용자명과 비밀번호를 입력하세요.")
+        # returnPressed + keyPressEvent 양쪽에서 호출될 수 있으므로 중복 실행 방지
+        if getattr(self, "_login_in_progress", False):
             return
+        self._login_in_progress = True
 
-        # 오프라인 데모 계정 — 서버 인증 없이 바로 진입
-        if username == self._DEMO_USER and password == self._DEMO_PASS:
-            self.token    = "demo"
-            self.username = username
-            self.accept()
+        knox_id = self._username_edit.text().strip()
+        if not knox_id:
+            self._login_in_progress = False
+            self._show_error("Knox ID를 입력하세요.")
             return
 
         self._login_btn.setEnabled(False)
-        self._login_btn.setText("로그인 중...")
+        self._login_btn.setText("연결 중...")
         self._error_label.hide()
+        self._progress_bar.show()
+        self.username = knox_id
 
+        # UI 갱신(버튼 텍스트·프로그레스바)이 화면에 그려진 후 API 호출
+        # singleShot(0) → 이벤트 루프 1틱 후 실행, 블로킹 전에 렌더링 완료
+        QTimer.singleShot(0, self._do_api_call)
+
+    def _do_api_call(self) -> None:
+        """로딩 화면 표시 후 API 호출을 백그라운드 스레드에서 실행한다."""
+        # 600ms 타이머를 즉시 시작 — API 호출 완료 여부와 무관하게 전환 타이밍 고정
+        QTimer.singleShot(600, self._do_transition)
+        # 접속 로그 전송을 백그라운드에서 실행 (UI 스레드 블로킹 방지)
+        threading.Thread(target=self._send_access_log, daemon=True).start()
+
+    def _send_access_log(self) -> None:
         try:
-            data = self.api_client.login(username, password)
-            self.token = data["access_token"]
-            self.username = data.get("username", username)
-            self.accept()
-        except Exception as exc:
-            msg = str(exc)
-            if "401" in msg:
-                self._show_error("사용자명 또는 비밀번호가 올바르지 않습니다.")
-            elif "connect" in msg.lower() or "connection" in msg.lower():
-                self._show_error("서버에 연결할 수 없습니다.\nAPI 서버가 실행 중인지 확인하세요.")
-            else:
-                self._show_error(f"로그인 실패: {exc}")
-        finally:
-            self._login_btn.setEnabled(True)
-            self._login_btn.setText("로그인")
+            self.api_client.log_access(self.username)
+        except Exception:
+            pass
+
+    def _do_transition(self) -> None:
+        """로딩 완료 후 크로스페이드로 MainWindow로 전환한다."""
+        self._progress_bar.hide()
+
+        # login_ready를 먼저 emit → main.py가 MainWindow를 opacity=0으로 즉시 표시
+        # 그 직후 LoginDialog 페이드아웃 시작 → 두 윈도우가 동시에 크로스페이드
+        self.login_ready.emit(self.username)
+
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_anim.setDuration(300)
+        self._fade_anim.setStartValue(1.0)
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.finished.connect(self.hide)
+        self._fade_anim.start()
 
     def _show_error(self, message: str) -> None:
         self._error_label.setText(message)
         self._error_label.show()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
-        if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
-            self._on_login()
-        else:
-            super().keyPressEvent(event)
+        # Enter 처리:
+        #   - QLineEdit 포커스 시: returnPressed 시그널이 _on_login을 호출
+        #   - 버튼 포커스 시: Qt가 Enter → clicked 변환 → _on_login을 호출
+        # 여기서 중복 호출하면 MainWindow가 2개 생성되므로 super()에만 위임한다.
+        super().keyPressEvent(event)
