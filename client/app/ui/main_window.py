@@ -14,6 +14,7 @@ from app.core.api_client import APIClient
 from app.ui.pages.home_page import HomePage
 from app.ui.pages.measurement_page import MeasurementPage
 from app.ui.pages.dc_bias_page import DCBiasMeasurementPage
+from app.ui.pages.optical_page import OpticalAnalysisPage
 
 
 class MainWindow(QMainWindow):
@@ -142,6 +143,11 @@ class MainWindow(QMainWindow):
         if characteristic not in self._measurement_pages:
             if characteristic == "DC_BIAS":
                 page = DCBiasMeasurementPage(
+                    settings=self.settings,
+                    api_client=self.api_client,
+                )
+            elif characteristic == "OPTICAL":
+                page = OpticalAnalysisPage(
                     settings=self.settings,
                     api_client=self.api_client,
                 )

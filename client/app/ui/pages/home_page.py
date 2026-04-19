@@ -28,7 +28,7 @@ _MAIN_CARDS = [
         "광학 설계분석",
         "OPTICAL",
         "광학 특성 및\n설계 결과 분석",
-        False,
+        True,
     ),
 ]
 

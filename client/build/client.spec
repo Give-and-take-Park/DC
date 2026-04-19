@@ -16,6 +16,8 @@ a = Analysis(
         # ── 계측기 드라이버 (데코레이터 기반 동적 등록, 자동 감지 안 됨) ──
         "app.instruments.drivers.lcr_meter.e4980a",
         "app.instruments.drivers.dc_source.b2901a",
+        # ── 광학 설계분석 페이지 ──
+        "app.ui.pages.optical_page",
         # ── PyVISA 백엔드 ──
         "pyvisa",
         "pyvisa.resources",

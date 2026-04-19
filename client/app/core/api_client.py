@@ -53,6 +53,40 @@ class APIClient:
             response.raise_for_status()
             return response.json()
 
+    def upload_optical(
+        self,
+        file_path: str,
+        operator: str = "",
+        session_name: str = "",
+        description: str = "",
+    ) -> dict:
+        """광학 설계분석 이미지를 서버에 업로드한다."""
+        from pathlib import Path
+        import mimetypes
+
+        mime, _ = mimetypes.guess_type(file_path)
+        mime = mime or "application/octet-stream"
+        filename = Path(file_path).name
+
+        with open(file_path, "rb") as f:
+            files = {"file": (filename, f, mime)}
+            data: dict = {}
+            if operator:
+                data["operator"] = operator
+            if session_name:
+                data["session_name"] = session_name
+            if description:
+                data["description"] = description
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(
+                    f"{self.base_url}/api/v1/optical/upload",
+                    files=files,
+                    data=data,
+                    headers=self._auth_headers(),
+                )
+                response.raise_for_status()
+                return response.json()
+
     def check_server(self) -> bool:
         """서버 연결 상태를 확인한다."""
         try:

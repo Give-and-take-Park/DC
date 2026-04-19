@@ -38,6 +38,7 @@ from app.ui.login_dialog import LoginDialog
 from app.ui.main_window import MainWindow
 from app.ui.pages.dc_bias_page import DCBiasMeasurementPage
 from app.ui.pages.measurement_page import MeasurementPage
+from app.ui.pages.optical_page import OpticalAnalysisPage
 
 
 # ── 모의(Mock) 계측기 ────────────────────────────────────────────────────
@@ -146,6 +147,17 @@ class _MockAPIClient:
     def send_measurements(self, payload: dict) -> dict:
         return {"session_id": 9999, "status": "preview — not sent to server"}
 
+    def upload_optical(self, file_path: str, **kwargs) -> dict:
+        """광학 이미지 업로드 모의 — 실제 전송 없이 성공 응답 반환."""
+        from pathlib import Path
+        return {
+            "id": 1,
+            "original_filename": Path(file_path).name,
+            "file_size": 0,
+            "uploaded_at": "2026-01-01T00:00:00Z",
+            "status": "preview — not sent to server",
+        }
+
     def get_instruments(self) -> list:
         return []
 
@@ -200,6 +212,7 @@ def _show_login_preview(settings: Settings, geometry=None) -> None:
             current = window._stack.currentWidget()
             if isinstance(current, (MeasurementPage, DCBiasMeasurementPage)):
                 _inject_instrument_into(current)
+            # OpticalAnalysisPage는 계측기 불필요 — 별도 주입 없음
 
         window._home_page.card_clicked.connect(_inject_on_navigate)
 
