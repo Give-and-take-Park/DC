@@ -10,13 +10,12 @@
 │                         │                                                  │
 │ ┌ 작업 정보 ──────────┐ │  [📂 파일 추가]  [📷 화면 캡처]  ← 탭 토글       │
 │ │ 작업자: [________] │ │  ─────────────────────────────────────────────── │
-│ │ 세션명: [________] │ │  파일 탭: 드래그앤드롭 영역 + 파일 선택 버튼       │
-│ │ 설명:   [________] │ │  캡처 탭: [캡처 시작] + 안내 문구                 │
-│ └────────────────────┘ │  ─────────────────────────────────────────────── │
-│                         │  [thumb] img1.png   [파일]  [×]                  │
-│ 대기 이미지: 0장        │  [thumb] cap_1.png  [캡처]  [×]                  │
-│                         │  ...                                             │
-│ [▲ 서버 전송]           │                                                  │
+│ │ Lot No: [________] │ │  파일 탭: 드래그앤드롭 영역 + 파일 선택 버튼       │
+│ └────────────────────┘ │  캡처 탭: [캡처 시작] + 안내 문구                 │
+│                         │  ─────────────────────────────────────────────── │
+│ 대기 이미지: 0장        │  이미지 목록 (격자 형태)                           │
+│                         │  [card][card][card]                               │
+│ [▲ 서버 전송]           │  [card][card]...                                  │
 │ [전체 삭제]             │                                                  │
 └─────────────────────────┴──────────────────────────────────────────────────┘
 """
@@ -27,15 +26,16 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import (
-    QObject, QPoint, QRect, Qt, QThread, QTimer, pyqtSignal, pyqtSlot,
+    QObject, QPoint, QRect, QRegularExpression, Qt, QThread, QTimer,
+    pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
-    QColor, QFont, QPainter, QPen, QPixmap,
+    QColor, QFont, QPainter, QPen, QPixmap, QRegularExpressionValidator,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
-    QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app.config.settings import Settings
@@ -44,6 +44,8 @@ from app.core.api_client import APIClient
 # 캡처 이미지 저장 해상도 (픽셀)
 _CAPTURE_W = 1536
 _CAPTURE_H = 1024
+# 이미지 격자 열 수
+_GRID_COLS  = 3
 
 
 # ── 전체화면 캡처 오버레이 ─────────────────────────────────────────────────────
@@ -52,7 +54,7 @@ class _CaptureOverlay(QWidget):
 
     - 오버레이 표시 전에 화면 전체를 미리 캡처하여 배경으로 사용
     - 마우스 드래그로 캡처 영역 선택 (파란 테두리 + 크기 안내)
-    - 선택 완료 시 captured(pixmap, suggested_name) emit  (고해상도)
+    - 선택 완료 시 captured(pixmap, suggested_name) emit  (고해상도, BMP)
     - ESC 키로 취소, cancelled() emit
     """
 
@@ -67,14 +69,8 @@ class _CaptureOverlay(QWidget):
         self._full_shot: QPixmap = screen.grabWindow(0)
 
         # ── HiDPI 스케일 팩터 계산 ─────────────────────────────────
-        # Qt6/Windows 에서 grabWindow(0) 이 반환하는 pixmap 의 크기가
-        # 논리 픽셀(devicePixelRatio 반영)인 경우와
-        # 물리 픽셀(devicePixelRatio == 1) 인 경우 모두 존재한다.
-        # logical_w / pixmap_w 를 직접 비교하여 스케일을 계산하면
-        # 어느 경우에도 올바른 좌표 변환이 가능하다.
         logical_w: int = screen.geometry().width()
         pixmap_w:  int = self._full_shot.width()
-        # _px_scale: 논리 픽셀 1개당 픽스맵 픽셀 수 (≥ 1.0)
         self._px_scale: float = pixmap_w / logical_w if logical_w > 0 else 1.0
 
         self.setGeometry(screen.geometry())
@@ -90,7 +86,6 @@ class _CaptureOverlay(QWidget):
         self._end:       QPoint = QPoint()
         self._selecting: bool   = False
 
-    # ── 논리 rect → 픽스맵 rect 변환 ────────────────────────────────
     def _to_pixmap_rect(self, logical: QRect) -> QRect:
         """위젯 논리 좌표 rect 를 _full_shot 픽스맵 좌표로 변환."""
         s = self._px_scale
@@ -101,28 +96,20 @@ class _CaptureOverlay(QWidget):
             round(logical.height() * s),
         )
 
-    # ── 그리기 ──────────────────────────────────────────────────────
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-
-        # 배경: 미리 찍어둔 스크린샷 (논리 크기로 자동 스케일)
         painter.drawPixmap(self.rect(), self._full_shot)
-
-        # 반투명 어두운 오버레이
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
 
         if self._selecting:
             sel = QRect(self._start, self._end).normalized()
             if sel.width() > 0 and sel.height() > 0:
-                # 선택 영역: 논리 rect → 픽스맵 rect 로 변환 후 원본 복원
                 src = self._to_pixmap_rect(sel)
                 painter.drawPixmap(sel, self._full_shot, src)
-                # 파란 테두리
                 pen = QPen(QColor("#2563EB"), 2)
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(sel)
-                # 크기 안내 (물리 픽셀 기준으로 표시)
                 phys_w = round(sel.width()  * self._px_scale)
                 phys_h = round(sel.height() * self._px_scale)
                 info_text = f"  {phys_w} × {phys_h} px  "
@@ -137,7 +124,6 @@ class _CaptureOverlay(QWidget):
                 painter.setPen(QColor("#FFFFFF"))
                 painter.drawText(lx + 4, max(ly, 2) + 14, info_text)
 
-    # ── 마우스 이벤트 ────────────────────────────────────────────────
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             self._start     = event.pos()
@@ -156,18 +142,15 @@ class _CaptureOverlay(QWidget):
             self.hide()
 
             if sel.width() > 10 and sel.height() > 10:
-                # 논리 rect → 픽스맵 rect 로 변환하여 정확하게 크롭
                 phys_rect = self._to_pixmap_rect(sel)
                 cropped = self._full_shot.copy(phys_rect)
-                # 지정 해상도(_CAPTURE_W × _CAPTURE_H)로 리샘플링
-                # SmoothTransformation: 고품질 바이리니어 보간 적용
                 final = cropped.scaled(
                     _CAPTURE_W, _CAPTURE_H,
                     Qt.AspectRatioMode.IgnoreAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-                final.setDevicePixelRatio(1.0)   # 저장 픽셀 = 논리 픽셀 1:1
-                name = f"capture_{uuid.uuid4().hex[:8]}.png"
+                final.setDevicePixelRatio(1.0)
+                name = f"capture_{uuid.uuid4().hex[:8]}.bmp"
                 self.captured.emit(final, name)
             else:
                 self.cancelled.emit()
@@ -200,14 +183,17 @@ class _ImageItem:
         self.is_temp      = is_temp
 
 
-# ── 이미지 카드 위젯 ──────────────────────────────────────────────────────────
+# ── 이미지 카드 위젯 (격자 형태) ─────────────────────────────────────────────
 class _ImageCard(QFrame):
-    """이미지 목록의 개별 아이템 (썸네일 + 파일명 + 출처 태그 + 삭제 버튼)."""
+    """이미지 목록의 개별 아이템 (격자 카드: 썸네일 + 파일명 + 출처 태그 + 삭제)."""
 
-    remove_requested = pyqtSignal(str)   # uid
+    remove_requested = pyqtSignal(str)    # uid
+    name_changed     = pyqtSignal(str, str)  # uid, new_name
 
-    _THUMB_W = 96
-    _THUMB_H = 64
+    _THUMB_W = 72
+    _THUMB_H = 72
+    _CARD_W  = 170
+    _CARD_H  = 104
 
     _STYLE_NORMAL = (
         "QFrame#image-card {"
@@ -235,16 +221,18 @@ class _ImageCard(QFrame):
     def __init__(self, item: _ImageItem, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.uid = item.uid
+        self._display_name = item.display_name
         self._build(item)
 
     def _build(self, item: _ImageItem) -> None:
         self.setObjectName("image-card")
         self.setStyleSheet(self._STYLE_NORMAL)
-        self.setFixedHeight(84)
+        self.setFixedHeight(self._CARD_H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 8, 10, 8)
-        row.setSpacing(12)
+        row.setContentsMargins(8, 8, 8, 8)
+        row.setSpacing(8)
 
         # 썸네일
         thumb_lbl = QLabel()
@@ -261,37 +249,75 @@ class _ImageCard(QFrame):
         )
         row.addWidget(thumb_lbl)
 
-        # 파일명 + 출처 태그
-        info = QVBoxLayout()
-        info.setSpacing(4)
+        # 오른쪽: 이름 + 태그
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(4)
 
-        name_lbl = QLabel(item.display_name)
-        name_lbl.setFont(QFont("Segoe UI", 10))
-        name_lbl.setStyleSheet("color: #1E293B; font-weight: 600;")
+        # 이름 행 (label / edit) + × 버튼
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(2)
 
-        tag_color = "#2563EB" if item.source == "파일" else "#7C3AED"
-        tag_lbl = QLabel(f"● {item.source}")
-        tag_lbl.setStyleSheet(f"color: {tag_color}; font-size: 11px;")
+        self._name_lbl = QLabel(item.display_name)
+        self._name_lbl.setFont(QFont("Segoe UI", 8))
+        self._name_lbl.setStyleSheet("color: #1E293B; font-weight: 600;")
+        self._name_lbl.setWordWrap(True)
+        self._name_lbl.setToolTip("클릭하여 파일명 수정")
+        self._name_lbl.setCursor(Qt.CursorShape.IBeamCursor)
+        self._name_lbl.mousePressEvent = self._start_edit  # type: ignore[method-assign]
 
-        info.addWidget(name_lbl)
-        info.addWidget(tag_lbl)
-        row.addLayout(info, 1)
+        self._name_edit = QLineEdit(item.display_name)
+        self._name_edit.setFont(QFont("Segoe UI", 8))
+        self._name_edit.setStyleSheet(
+            "QLineEdit { border: 1.5px solid #2563EB; border-radius: 3px; padding: 1px 4px; }"
+        )
+        self._name_edit.hide()
+        self._name_edit.editingFinished.connect(self._finish_edit)
 
-        # 삭제 버튼
+        name_row.addWidget(self._name_lbl, 1)
+        name_row.addWidget(self._name_edit, 1)
+
         del_btn = QPushButton("×")
-        del_btn.setFixedSize(26, 26)
+        del_btn.setFixedSize(18, 18)
         del_btn.setStyleSheet(
             "QPushButton {"
             "  background: transparent; color: #94A3B8;"
-            "  border: 1px solid #E2E8F0; border-radius: 4px;"
-            "  font-size: 15px; font-weight: bold;"
+            "  border: 1px solid #E2E8F0; border-radius: 3px;"
+            "  font-size: 12px; font-weight: bold;"
             "}"
             "QPushButton:hover { color: #DC2626; border-color: #DC2626; }"
         )
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         del_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         del_btn.clicked.connect(lambda: self.remove_requested.emit(self.uid))
-        row.addWidget(del_btn)
+        name_row.addWidget(del_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        right.addLayout(name_row)
+
+        tag_color = "#2563EB" if item.source == "파일" else "#7C3AED"
+        tag_lbl = QLabel(f"● {item.source}")
+        tag_lbl.setStyleSheet(f"color: {tag_color}; font-size: 10px;")
+        right.addWidget(tag_lbl)
+        right.addStretch()
+
+        row.addLayout(right, 1)
+
+    def _start_edit(self, _event) -> None:
+        self._name_lbl.hide()
+        self._name_edit.setText(self._display_name)
+        self._name_edit.show()
+        self._name_edit.selectAll()
+        self._name_edit.setFocus()
+
+    def _finish_edit(self) -> None:
+        new_name = self._name_edit.text().strip()
+        if new_name and new_name != self._display_name:
+            self._display_name = new_name
+            self.name_changed.emit(self.uid, new_name)
+        self._name_lbl.setText(self._display_name)
+        self._name_edit.hide()
+        self._name_lbl.show()
 
     def mark_ok(self) -> None:
         self.setStyleSheet(self._STYLE_OK)
@@ -300,57 +326,94 @@ class _ImageCard(QFrame):
         self.setStyleSheet(self._STYLE_ERR)
 
 
-# ── 업로드 워커 ───────────────────────────────────────────────────────────────
-class _UploadWorker(QObject):
-    """이미지 목록을 순차적으로 서버에 업로드하는 백그라운드 워커."""
+# ── 파이프라인 워커 ───────────────────────────────────────────────────────────
+class _PipelineWorker(QObject):
+    """ZIP 압축 → 업로드 → 분석 요청 → 결과 다운로드 파이프라인 워커.
 
-    progress  = pyqtSignal(int, int, str)    # (현재, 전체, 파일명)
-    item_done = pyqtSignal(str, bool, str)   # (uid, 성공여부, 메시지)
-    finished  = pyqtSignal(int, int)         # (성공 수, 실패 수)
+    5단계 진행:
+      1. 이미지 ZIP 압축
+      2. ZIP 서버 업로드
+      3. 서버 분석 요청
+      4. 결과 ZIP 다운로드
+      5. 완료
+    """
+
+    stage_changed = pyqtSignal(int, str)   # (단계 1-5, 안내 문구)
+    finished      = pyqtSignal(bool, str)  # (성공 여부, 메시지)
+
+    _MSGS = {
+        1: "1/5: 폴더 압축 중",
+        2: "2/5: 서버로 파일 전송 중",
+        3: "3/5: 서버에서 분석 진행 중",
+        4: "4/5: 결과 다운로드 중",
+        5: "5/5: 결과 다운로드 완료",
+    }
 
     def __init__(
         self,
         api_client: APIClient,
         items: List[_ImageItem],
         operator: str,
-        session_name: str,
-        description: str,
+        lot_no: str,
+        save_dir: Path,
     ) -> None:
         super().__init__()
         self._api      = api_client
         self._items    = items
         self._operator = operator
-        self._session  = session_name
-        self._desc     = description
-        self._running  = True
-
-    def stop(self) -> None:
-        self._running = False
+        self._lot_no   = lot_no
+        self._save_dir = save_dir
 
     @pyqtSlot()
     def run(self) -> None:
-        ok_count  = 0
-        err_count = 0
-        total     = len(self._items)
+        import tempfile
+        import zipfile
 
-        for i, item in enumerate(self._items):
-            if not self._running:
-                break
-            self.progress.emit(i + 1, total, item.display_name)
-            try:
-                self._api.upload_optical(
-                    file_path=item.file_path,
-                    operator=self._operator,
-                    session_name=self._session,
-                    description=self._desc,
-                )
-                self.item_done.emit(item.uid, True, "업로드 완료")
-                ok_count += 1
-            except Exception as exc:
-                self.item_done.emit(item.uid, False, str(exc))
-                err_count += 1
+        zip_path: Optional[Path] = None
+        try:
+            # ── 1단계: ZIP 압축 ─────────────────────────────────────
+            self.stage_changed.emit(1, self._MSGS[1])
+            tmp_dir = Path(tempfile.gettempdir()) / "rims_optical"
+            tmp_dir.mkdir(exist_ok=True)
+            zip_path = tmp_dir / f"{self._lot_no}.zip"
 
-        self.finished.emit(ok_count, err_count)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for item in self._items:
+                    zf.write(item.file_path, item.display_name)
+
+            # ── 2단계: ZIP 업로드 ────────────────────────────────────
+            self.stage_changed.emit(2, self._MSGS[2])
+            upload_result = self._api.upload_optical_zip(
+                zip_path=str(zip_path),
+                operator=self._operator,
+                lot_no=self._lot_no,
+            )
+            record_id: int = upload_result.get("id", 0)
+
+            # ── 3단계: 분석 요청 ─────────────────────────────────────
+            self.stage_changed.emit(3, self._MSGS[3])
+            self._api.request_optical_analysis(record_id)
+
+            # ── 4단계: 결과 다운로드 ─────────────────────────────────
+            self.stage_changed.emit(4, self._MSGS[4])
+            result_bytes = self._api.download_optical_result(record_id)
+
+            self._save_dir.mkdir(parents=True, exist_ok=True)
+            out_path = self._save_dir / f"{self._lot_no}_result.zip"
+            out_path.write_bytes(result_bytes)
+
+            # ── 5단계: 완료 ──────────────────────────────────────────
+            self.stage_changed.emit(5, self._MSGS[5])
+            self.finished.emit(True, f"결과 저장: {out_path}")
+
+        except Exception as exc:
+            self.finished.emit(False, f"오류: {exc}")
+        finally:
+            if zip_path is not None:
+                try:
+                    zip_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 # ── 광학 설계분석 페이지 ──────────────────────────────────────────────────────
@@ -371,11 +434,12 @@ class OpticalAnalysisPage(QWidget):
         self.settings   = settings
         self.api_client = api_client
 
-        self._items:   List[_ImageItem]          = []
-        self._cards:   dict[str, _ImageCard]     = {}
-        self._thread:  Optional[QThread]         = None
-        self._worker:  Optional[_UploadWorker]   = None
-        self._overlay: Optional[_CaptureOverlay] = None
+        self._items:        List[_ImageItem]           = []
+        self._cards:        dict[str, _ImageCard]      = {}
+        self._cards_order:  list[str]                  = []
+        self._thread:       Optional[QThread]          = None
+        self._worker:       Optional[_PipelineWorker]  = None
+        self._overlay:      Optional[_CaptureOverlay]  = None
 
         self._init_ui()
 
@@ -395,7 +459,6 @@ class OpticalAnalysisPage(QWidget):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter)
 
-        # 초기 탭 스타일 적용
         self._switch_tab("file")
 
     # ── 페이지 서브헤더 ──────────────────────────────────────────────
@@ -431,7 +494,6 @@ class OpticalAnalysisPage(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── 스크롤 영역 ───────────────────────────────────────────────
         scroll_content = QWidget()
         inner = QVBoxLayout(scroll_content)
         inner.setContentsMargins(12, 12, 12, 8)
@@ -446,7 +508,6 @@ class OpticalAnalysisPage(QWidget):
             "}"
             "QLineEdit:focus { border: 2px solid #1E3A5F; }"
         )
-
         info_box = QGroupBox("작업 정보")
         form = QFormLayout(info_box)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -461,21 +522,18 @@ class OpticalAnalysisPage(QWidget):
         self._operator_edit.setStyleSheet(_INPUT_STYLE)
         form.addRow("작업자:", self._operator_edit)
 
-        self._session_edit = QLineEdit()
-        self._session_edit.setFont(QFont("Segoe UI", 9))
-        self._session_edit.setPlaceholderText("세션명 (선택)")
-        self._session_edit.setStyleSheet(_INPUT_STYLE)
-        form.addRow("세션명:", self._session_edit)
-
-        self._desc_edit = QLineEdit()
-        self._desc_edit.setFont(QFont("Segoe UI", 9))
-        self._desc_edit.setPlaceholderText("설명 (선택)")
-        self._desc_edit.setStyleSheet(_INPUT_STYLE)
-        form.addRow("설명:", self._desc_edit)
+        self._lot_edit = QLineEdit()
+        self._lot_edit.setFont(QFont("Segoe UI", 9))
+        self._lot_edit.setPlaceholderText("7자리 (영문+숫자)")
+        self._lot_edit.setMaxLength(7)
+        self._lot_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9]{0,7}"))
+        )
+        self._lot_edit.setStyleSheet(_INPUT_STYLE)
+        form.addRow("Lot No:", self._lot_edit)
 
         inner.addWidget(info_box)
 
-        # 상태
         self._count_label = QLabel("대기 이미지: 0장")
         self._count_label.setStyleSheet("color: #64748B; font-size: 12px;")
         inner.addWidget(self._count_label)
@@ -494,6 +552,10 @@ class OpticalAnalysisPage(QWidget):
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: #64748B; font-size: 11px;")
         self._status_label.setWordWrap(True)
+        # Ignored: 텍스트 길이가 패널 수평 크기에 영향을 주지 않도록
+        self._status_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         inner.addWidget(self._status_label)
         inner.addStretch()
 
@@ -504,7 +566,6 @@ class OpticalAnalysisPage(QWidget):
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll, 1)
 
-        # ── 고정 버튼 섹션 ────────────────────────────────────────────
         btn_panel = QWidget()
         btn_panel.setObjectName("dc-btn-panel")
         btn_panel.setStyleSheet(
@@ -585,7 +646,7 @@ class OpticalAnalysisPage(QWidget):
         list_header.addStretch()
         layout.addLayout(list_header)
 
-        # ── 이미지 카드 스크롤 영역 ──────────────────────────────────
+        # ── 이미지 격자 스크롤 영역 ──────────────────────────────────
         self._list_scroll = QScrollArea()
         self._list_scroll.setWidgetResizable(True)
         self._list_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -594,19 +655,30 @@ class OpticalAnalysisPage(QWidget):
 
         self._list_content = QWidget()
         self._list_content.setStyleSheet("background: transparent;")
-        self._list_layout = QVBoxLayout(self._list_content)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(6)
+        content_layout = QVBoxLayout(self._list_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
-        # 빈 상태 안내 (stretch 앞에 배치)
+        # 빈 상태 안내
         self._empty_label = QLabel(
             "이미지를 추가하세요.\n"
             "파일을 드래그앤드롭하거나, [파일 선택] 또는 [캡처 시작]을 클릭하세요."
         )
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setStyleSheet("color: #94A3B8; font-size: 13px;")
-        self._list_layout.addWidget(self._empty_label)
-        self._list_layout.addStretch()
+        content_layout.addWidget(self._empty_label)
+
+        # 격자 컨테이너
+        self._grid_widget = QWidget()
+        self._grid_widget.setStyleSheet("background: transparent;")
+        self._list_layout = QGridLayout(self._grid_widget)
+        self._list_layout.setContentsMargins(0, 4, 0, 4)
+        self._list_layout.setSpacing(8)
+        for _c in range(_GRID_COLS):
+            self._list_layout.setColumnStretch(_c, 1)
+        self._grid_widget.hide()
+        content_layout.addWidget(self._grid_widget)
+        content_layout.addStretch()
 
         self._list_scroll.setWidget(self._list_content)
         layout.addWidget(self._list_scroll, 1)
@@ -614,7 +686,6 @@ class OpticalAnalysisPage(QWidget):
         return panel
 
     def _build_file_action(self) -> QWidget:
-        """파일 추가 탭: 드래그앤드롭 영역 + 파일 선택 버튼."""
         w = QWidget()
         w.setObjectName("file-drop-area")
         w.setFixedHeight(80)
@@ -654,7 +725,6 @@ class OpticalAnalysisPage(QWidget):
         return w
 
     def _build_capture_action(self) -> QWidget:
-        """화면 캡처 탭: 안내 문구 + 캡처 시작 버튼."""
         w = QWidget()
         w.setObjectName("capture-action-area")
         w.setFixedHeight(80)
@@ -669,7 +739,10 @@ class OpticalAnalysisPage(QWidget):
         layout = QHBoxLayout(w)
         layout.setContentsMargins(16, 8, 16, 8)
 
-        lbl = QLabel("화면의 특정 영역을 드래그하여 캡처합니다.\n고해상도(DPI 반영)로 저장됩니다.")
+        lbl = QLabel(
+            "화면의 특정 영역을 드래그하여 캡처합니다.\n"
+            "고해상도(1536×1024 BMP)로 저장됩니다."
+        )
         lbl.setStyleSheet(
             "color: #64748B; font-size: 12px;"
             "border: none; background: transparent;"
@@ -797,7 +870,6 @@ class OpticalAnalysisPage(QWidget):
         win = self.window()
         if win:
             win.showMinimized()
-        # 창이 완전히 최소화될 때까지 대기 후 오버레이 표시
         QTimer.singleShot(300, self._show_overlay)
 
     def _show_overlay(self) -> None:
@@ -813,11 +885,10 @@ class OpticalAnalysisPage(QWidget):
             win.raise_()
             win.activateWindow()
 
-        # 임시 디렉터리에 PNG로 저장 (고해상도 유지)
         tmp_dir = Path(tempfile.gettempdir()) / "rims_captures"
         tmp_dir.mkdir(exist_ok=True)
         tmp_path = str(tmp_dir / name)
-        pixmap.save(tmp_path, "PNG")
+        pixmap.save(tmp_path, "BMP")
 
         item = _ImageItem(
             uid=uuid.uuid4().hex,
@@ -841,9 +912,10 @@ class OpticalAnalysisPage(QWidget):
         self._items.append(item)
         card = _ImageCard(item)
         card.remove_requested.connect(self._on_remove_item)
+        card.name_changed.connect(self._on_name_changed)
         self._cards[item.uid] = card
-        # stretch 이전 위치(count-1)에 카드 삽입
-        self._list_layout.insertWidget(self._list_layout.count() - 1, card)
+        self._cards_order.append(item.uid)
+        self._rebuild_grid()
         self._refresh_state()
 
     def _on_remove_item(self, uid: str) -> None:
@@ -857,9 +929,11 @@ class OpticalAnalysisPage(QWidget):
                 pass
         self._items = [i for i in self._items if i.uid != uid]
         card = self._cards.pop(uid, None)
+        if uid in self._cards_order:
+            self._cards_order.remove(uid)
         if card:
-            self._list_layout.removeWidget(card)
             card.deleteLater()
+        self._rebuild_grid()
         self._refresh_state()
 
     def _on_clear_all(self) -> None:
@@ -871,15 +945,34 @@ class OpticalAnalysisPage(QWidget):
                     pass
         self._items.clear()
         for card in self._cards.values():
-            self._list_layout.removeWidget(card)
             card.deleteLater()
         self._cards.clear()
+        self._cards_order.clear()
+        self._rebuild_grid()
         self._refresh_state()
         self._set_status("")
 
+    @pyqtSlot(str, str)
+    def _on_name_changed(self, uid: str, new_name: str) -> None:
+        item = next((i for i in self._items if i.uid == uid), None)
+        if item:
+            item.display_name = new_name
+
+    def _rebuild_grid(self) -> None:
+        """카드 목록을 격자 레이아웃으로 재배치한다."""
+        while self._list_layout.count():
+            self._list_layout.takeAt(0)
+
+        for i, uid in enumerate(self._cards_order):
+            card = self._cards.get(uid)
+            if card:
+                row, col = divmod(i, _GRID_COLS)
+                self._list_layout.addWidget(card, row, col)
+
     def _refresh_state(self) -> None:
-        has = bool(self._items)
+        has = bool(self._cards_order)
         self._empty_label.setVisible(not has)
+        self._grid_widget.setVisible(has)
         self._upload_btn.setEnabled(has)
         self._clear_all_btn.setEnabled(has)
         self._count_label.setText(f"대기 이미지: {len(self._items)}장")
@@ -887,56 +980,61 @@ class OpticalAnalysisPage(QWidget):
     # ── 서버 전송 ─────────────────────────────────────────────────────
     def _on_upload(self) -> None:
         if not self._items:
-            self._set_status("전송할 이미지가 없습니다.", error=True)
+            self._set_status("이미지를 선택해주세요.", error=True)
+            return
+        lot = self._lot_edit.text().strip()
+        if len(lot) != 7:
+            self._set_status("Lot No를 올바르게 입력해주세요.", error=True)
+            self._lot_edit.setFocus()
             return
         if self._thread and self._thread.isRunning():
             return
 
         self._upload_btn.setEnabled(False)
         self._clear_all_btn.setEnabled(False)
-        self._progress_bar.setRange(0, len(self._items))
+        self._progress_bar.setRange(0, 5)
         self._progress_bar.setValue(0)
         self._progress_bar.show()
-        self._set_status("서버 전송 중…")
+        self._set_status("시작 중…")
+
+        save_dir = Path.home() / "Documents" / "RIMS" / "results"
 
         self._thread = QThread()
-        self._worker = _UploadWorker(
+        self._worker = _PipelineWorker(
             api_client=self.api_client,
             items=list(self._items),
             operator=self._operator_edit.text().strip(),
-            session_name=self._session_edit.text().strip(),
-            description=self._desc_edit.text().strip(),
+            lot_no=lot,
+            save_dir=save_dir,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_upload_progress)
-        self._worker.item_done.connect(self._on_item_done)
-        self._worker.finished.connect(self._on_upload_finished)
+        self._worker.stage_changed.connect(self._on_stage_changed)
+        self._worker.finished.connect(self._on_pipeline_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
 
-    @pyqtSlot(int, int, str)
-    def _on_upload_progress(self, current: int, total: int, name: str) -> None:
-        self._progress_bar.setValue(current)
-        self._set_status(f"전송 중 ({current}/{total}): {name}")
+    @pyqtSlot(int, str)
+    def _on_stage_changed(self, stage: int, msg: str) -> None:
+        self._progress_bar.setValue(stage)
+        self._set_status(msg)
 
-    @pyqtSlot(str, bool, str)
-    def _on_item_done(self, uid: str, ok: bool, _msg: str) -> None:
-        card = self._cards.get(uid)
-        if card:
-            if ok:
+    @pyqtSlot(bool, str)
+    def _on_pipeline_finished(self, ok: bool, msg: str) -> None:
+        if ok:
+            self._progress_bar.setValue(5)
+            for card in self._cards.values():
                 card.mark_ok()
-            else:
+            # 패널: 짧은 완료 문구 / 상태바: 전체 경로
+            self._set_status("5/5: 결과 다운로드 완료")
+            self.status_message.emit(f"결과 저장: {msg}")
+            QMessageBox.information(self, "다운로드 완료", "결과가 다운로드 되었습니다.")
+        else:
+            self._progress_bar.hide()
+            for card in self._cards.values():
                 card.mark_error()
-
-    @pyqtSlot(int, int)
-    def _on_upload_finished(self, ok: int, err: int) -> None:
-        self._progress_bar.hide()
-        msg = f"전송 완료: 성공 {ok}장"
-        if err:
-            msg += f", 실패 {err}장"
-        self._set_status(msg, error=bool(err))
-        self.status_message.emit(msg)
+            self._set_status("전송 중 오류가 발생했습니다.", error=True)
+            self.status_message.emit(f"광학 분석 오류: {msg}")
         has = bool(self._items)
         self._upload_btn.setEnabled(has)
         self._clear_all_btn.setEnabled(has)

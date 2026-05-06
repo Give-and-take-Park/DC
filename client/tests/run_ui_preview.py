@@ -147,16 +147,22 @@ class _MockAPIClient:
     def send_measurements(self, payload: dict) -> dict:
         return {"session_id": 9999, "status": "preview — not sent to server"}
 
-    def upload_optical(self, file_path: str, **kwargs) -> dict:
-        """광학 이미지 업로드 모의 — 실제 전송 없이 성공 응답 반환."""
-        from pathlib import Path
-        return {
-            "id": 1,
-            "original_filename": Path(file_path).name,
-            "file_size": 0,
-            "uploaded_at": "2026-01-01T00:00:00Z",
-            "status": "preview — not sent to server",
-        }
+    def upload_optical_zip(self, zip_path: str = "", operator: str = "", lot_no: str = "") -> dict:
+        """ZIP 업로드 모의 — 실제 전송 없이 성공 응답 반환."""
+        return {"id": 1, "lot_no": lot_no, "status": "preview — not sent to server"}
+
+    def request_optical_analysis(self, record_id: int) -> dict:
+        """분석 요청 모의."""
+        return {"record_id": record_id, "status": "analysis_queued"}
+
+    def download_optical_result(self, record_id: int) -> bytes:
+        """결과 다운로드 모의 — 빈 ZIP 반환."""
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("result.txt", f"[PREVIEW] record_id={record_id}")
+        return buf.getvalue()
 
     def get_instruments(self) -> list:
         return []

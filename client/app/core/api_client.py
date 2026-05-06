@@ -53,30 +53,23 @@ class APIClient:
             response.raise_for_status()
             return response.json()
 
-    def upload_optical(
+    def upload_optical_zip(
         self,
-        file_path: str,
+        zip_path: str,
         operator: str = "",
-        session_name: str = "",
-        description: str = "",
+        lot_no: str = "",
     ) -> dict:
-        """광학 설계분석 이미지를 서버에 업로드한다."""
+        """광학 설계분석 ZIP 파일을 서버에 업로드한다."""
         from pathlib import Path
-        import mimetypes
 
-        mime, _ = mimetypes.guess_type(file_path)
-        mime = mime or "application/octet-stream"
-        filename = Path(file_path).name
-
-        with open(file_path, "rb") as f:
-            files = {"file": (filename, f, mime)}
+        filename = Path(zip_path).name
+        with open(zip_path, "rb") as f:
+            files = {"file": (filename, f, "application/zip")}
             data: dict = {}
             if operator:
                 data["operator"] = operator
-            if session_name:
-                data["session_name"] = session_name
-            if description:
-                data["description"] = description
+            if lot_no:
+                data["lot_no"] = lot_no
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url}/api/v1/optical/upload",
@@ -86,6 +79,27 @@ class APIClient:
                 )
                 response.raise_for_status()
                 return response.json()
+
+    def request_optical_analysis(self, record_id: int) -> dict:
+        """서버에 광학 이미지 분석을 요청한다."""
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/api/v1/optical/analyze",
+                json={"record_id": record_id},
+                headers=self._auth_headers(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def download_optical_result(self, record_id: int) -> bytes:
+        """광학 분석 결과 ZIP 파일을 다운로드한다."""
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(
+                f"{self.base_url}/api/v1/optical/result/{record_id}",
+                headers=self._auth_headers(),
+            )
+            response.raise_for_status()
+            return response.content
 
     def check_server(self) -> bool:
         """서버 연결 상태를 확인한다."""
