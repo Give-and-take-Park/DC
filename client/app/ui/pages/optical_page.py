@@ -260,7 +260,7 @@ class _ImageCard(QFrame):
         name_row.setSpacing(2)
 
         self._name_lbl = QLabel(item.display_name)
-        self._name_lbl.setFont(QFont("Segoe UI", 8))
+        self._name_lbl.setFont(QFont("Segoe UI", 10))
         self._name_lbl.setStyleSheet("color: #1E293B; font-weight: 600;")
         self._name_lbl.setWordWrap(True)
         self._name_lbl.setToolTip("클릭하여 파일명 수정")
@@ -268,7 +268,7 @@ class _ImageCard(QFrame):
         self._name_lbl.mousePressEvent = self._start_edit  # type: ignore[method-assign]
 
         self._name_edit = QLineEdit(item.display_name)
-        self._name_edit.setFont(QFont("Segoe UI", 8))
+        self._name_edit.setFont(QFont("Segoe UI", 10))
         self._name_edit.setStyleSheet(
             "QLineEdit { border: 1.5px solid #2563EB; border-radius: 3px; padding: 1px 4px; }"
         )
@@ -297,7 +297,7 @@ class _ImageCard(QFrame):
 
         tag_color = "#2563EB" if item.source == "파일" else "#7C3AED"
         tag_lbl = QLabel(f"● {item.source}")
-        tag_lbl.setStyleSheet(f"color: {tag_color}; font-size: 10px;")
+        tag_lbl.setStyleSheet(f"color: {tag_color}; font-size: 12px;")
         right.addWidget(tag_lbl)
         right.addStretch()
 
