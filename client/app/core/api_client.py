@@ -59,17 +59,18 @@ class APIClient:
         operator: str = "",
         lot_no: str = "",
     ) -> dict:
-        """광학 설계분석 ZIP 파일을 서버에 업로드한다."""
+        """광학 설계분석 ZIP 파일을 서버에 업로드한다.
+
+        반환값 dict에 'folder_name' 키가 포함된다.
+        """
         from pathlib import Path
 
         filename = Path(zip_path).name
         with open(zip_path, "rb") as f:
             files = {"file": (filename, f, "application/zip")}
-            data: dict = {}
+            data: dict = {"lot_no": lot_no}
             if operator:
                 data["operator"] = operator
-            if lot_no:
-                data["lot_no"] = lot_no
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url}/api/v1/optical/upload",
@@ -80,22 +81,22 @@ class APIClient:
                 response.raise_for_status()
                 return response.json()
 
-    def request_optical_analysis(self, record_id: int) -> dict:
+    def request_optical_analysis(self, folder_name: str) -> dict:
         """서버에 광학 이미지 분석을 요청한다."""
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
                 f"{self.base_url}/api/v1/optical/analyze",
-                json={"record_id": record_id},
+                json={"folder_name": folder_name},
                 headers=self._auth_headers(),
             )
             response.raise_for_status()
             return response.json()
 
-    def download_optical_result(self, record_id: int) -> bytes:
+    def download_optical_result(self, folder_name: str) -> bytes:
         """광학 분석 결과 ZIP 파일을 다운로드한다."""
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(
-                f"{self.base_url}/api/v1/optical/result/{record_id}",
+                f"{self.base_url}/api/v1/optical/result/{folder_name}",
                 headers=self._auth_headers(),
             )
             response.raise_for_status()

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import (
-    QObject, QPoint, QRect, QRegularExpression, Qt, QThread, QTimer,
+    QEvent, QObject, QPoint, QRect, QRegularExpression, Qt, QThread, QTimer,
     pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
@@ -221,7 +221,8 @@ class _ImageCard(QFrame):
     def __init__(self, item: _ImageItem, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.uid = item.uid
-        self._display_name = item.display_name
+        self._ext          = Path(item.display_name).suffix          # e.g. ".jpg"
+        self._display_name = Path(item.display_name).stem            # 확장자 제외 파일명
         self._build(item)
 
     def _build(self, item: _ImageItem) -> None:
@@ -259,7 +260,7 @@ class _ImageCard(QFrame):
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.setSpacing(2)
 
-        self._name_lbl = QLabel(item.display_name)
+        self._name_lbl = QLabel(self._display_name)
         self._name_lbl.setFont(QFont("Segoe UI", 10))
         self._name_lbl.setStyleSheet("color: #1E293B; font-weight: 600;")
         self._name_lbl.setWordWrap(True)
@@ -267,13 +268,14 @@ class _ImageCard(QFrame):
         self._name_lbl.setCursor(Qt.CursorShape.IBeamCursor)
         self._name_lbl.mousePressEvent = self._start_edit  # type: ignore[method-assign]
 
-        self._name_edit = QLineEdit(item.display_name)
+        self._name_edit = QLineEdit(self._display_name)
         self._name_edit.setFont(QFont("Segoe UI", 10))
         self._name_edit.setStyleSheet(
             "QLineEdit { border: 1.5px solid #2563EB; border-radius: 3px; padding: 1px 4px; }"
         )
         self._name_edit.hide()
         self._name_edit.editingFinished.connect(self._finish_edit)
+        self._name_edit.installEventFilter(self)
 
         name_row.addWidget(self._name_lbl, 1)
         name_row.addWidget(self._name_edit, 1)
@@ -296,7 +298,8 @@ class _ImageCard(QFrame):
         right.addLayout(name_row)
 
         tag_color = "#2563EB" if item.source == "파일" else "#7C3AED"
-        tag_lbl = QLabel(f"● {item.source}")
+        ext_str = self._ext.lstrip(".").upper()
+        tag_lbl = QLabel(f"● {ext_str} {item.source}")
         tag_lbl.setStyleSheet(f"color: {tag_color}; font-size: 12px;")
         right.addWidget(tag_lbl)
         right.addStretch()
@@ -311,13 +314,27 @@ class _ImageCard(QFrame):
         self._name_edit.setFocus()
 
     def _finish_edit(self) -> None:
-        new_name = self._name_edit.text().strip()
-        if new_name and new_name != self._display_name:
-            self._display_name = new_name
-            self.name_changed.emit(self.uid, new_name)
+        new_stem = self._name_edit.text().strip()
+        if new_stem and new_stem != self._display_name:
+            self._display_name = new_stem
+            self.name_changed.emit(self.uid, new_stem + self._ext)
         self._name_lbl.setText(self._display_name)
         self._name_edit.hide()
         self._name_lbl.show()
+
+    def _cancel_edit(self) -> None:
+        self._name_edit.blockSignals(True)
+        self._name_edit.setText(self._display_name)  # 입력 내용 원복
+        self._name_edit.hide()
+        self._name_lbl.show()
+        self._name_edit.blockSignals(False)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        if obj is self._name_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:  # type: ignore[attr-defined]
+                self._cancel_edit()
+                return True
+        return super().eventFilter(obj, event)
 
     def mark_ok(self) -> None:
         self.setStyleSheet(self._STYLE_OK)
@@ -388,18 +405,18 @@ class _PipelineWorker(QObject):
                 operator=self._operator,
                 lot_no=self._lot_no,
             )
-            record_id: int = upload_result.get("id", 0)
+            folder_name: str = upload_result.get("folder_name", self._lot_no)
 
             # ── 3단계: 분석 요청 ─────────────────────────────────────
             self.stage_changed.emit(3, self._MSGS[3])
-            self._api.request_optical_analysis(record_id)
+            self._api.request_optical_analysis(folder_name)
 
             # ── 4단계: 결과 다운로드 ─────────────────────────────────
             self.stage_changed.emit(4, self._MSGS[4])
-            result_bytes = self._api.download_optical_result(record_id)
+            result_bytes = self._api.download_optical_result(folder_name)
 
             self._save_dir.mkdir(parents=True, exist_ok=True)
-            out_path = self._save_dir / f"{self._lot_no}_result.zip"
+            out_path = self._save_dir / f"{folder_name}_result.zip"
             out_path.write_bytes(result_bytes)
 
             # ── 5단계: 완료 ──────────────────────────────────────────

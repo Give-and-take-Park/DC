@@ -5,12 +5,21 @@ from datetime import datetime
 
 class OpticalUploadResponse(BaseModel):
     """ZIP 업로드 성공 응답"""
-    id: int
-    original_filename: str
-    file_size: Optional[int] = None
-    lot_no: Optional[str] = None
-    uploaded_at: datetime
+    folder_name: str              # e.g. "ABC1234_20260510_143022"
+    lot_no: str
+    operator: Optional[str] = None
     status: str = "uploaded"
+
+
+class OpticalAnalyzeRequest(BaseModel):
+    """분석 요청 바디"""
+    folder_name: str
+
+
+class OpticalAnalyzeResponse(BaseModel):
+    """분석 완료 응답 — 분석이 끝난 후에 반환됩니다."""
+    folder_name: str
+    status: str                   # "analyzed"
 
 
 class OpticalAnalysisOut(BaseModel):
@@ -28,15 +37,3 @@ class OpticalAnalysisOut(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class OpticalAnalyzeRequest(BaseModel):
-    """분석 요청 바디"""
-    record_id: int
-
-
-class OpticalAnalyzeResponse(BaseModel):
-    """분석 완료 응답 — 분석이 끝난 후에 반환됩니다."""
-    record_id: int
-    status: str
-    result_filename: Optional[str] = None

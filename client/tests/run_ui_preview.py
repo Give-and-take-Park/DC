@@ -149,19 +149,21 @@ class _MockAPIClient:
 
     def upload_optical_zip(self, zip_path: str = "", operator: str = "", lot_no: str = "") -> dict:
         """ZIP 업로드 모의 — 실제 전송 없이 성공 응답 반환."""
-        return {"id": 1, "lot_no": lot_no, "status": "preview — not sent to server"}
+        from datetime import datetime
+        folder_name = f"{lot_no}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        return {"folder_name": folder_name, "lot_no": lot_no, "status": "preview — not sent to server"}
 
-    def request_optical_analysis(self, record_id: int) -> dict:
+    def request_optical_analysis(self, folder_name: str) -> dict:
         """분석 요청 모의."""
-        return {"record_id": record_id, "status": "analysis_queued"}
+        return {"folder_name": folder_name, "status": "analyzed"}
 
-    def download_optical_result(self, record_id: int) -> bytes:
+    def download_optical_result(self, folder_name: str) -> bytes:
         """결과 다운로드 모의 — 빈 ZIP 반환."""
         import io
         import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("result.txt", f"[PREVIEW] record_id={record_id}")
+            zf.writestr("result.csv", f"[PREVIEW] folder_name={folder_name}")
         return buf.getvalue()
 
     def get_instruments(self) -> list:
