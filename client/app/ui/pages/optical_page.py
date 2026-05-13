@@ -20,6 +20,7 @@
 └─────────────────────────┴──────────────────────────────────────────────────┘
 """
 
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -33,9 +34,9 @@ from PyQt6.QtGui import (
     QColor, QFont, QPainter, QPen, QPixmap, QRegularExpressionValidator,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar,
+    QPushButton, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app.config.settings import Settings
@@ -427,7 +428,7 @@ class _PipelineWorker(QObject):
 
             # ── 5단계: 완료 ──────────────────────────────────────────
             self.stage_changed.emit(5, self._MSGS[5])
-            self.finished.emit(True, f"결과 저장: {out_path}")
+            self.finished.emit(True, str(out_path))
 
         except Exception as exc:
             self.finished.emit(False, f"오류: {exc}")
@@ -1051,7 +1052,7 @@ class OpticalAnalysisPage(QWidget):
             # 패널: 짧은 완료 문구 / 상태바: 전체 경로
             self._set_status("5/5: 결과 다운로드 완료")
             self.status_message.emit(f"결과 저장: {msg}")
-            QMessageBox.information(self, "다운로드 완료", "결과가 다운로드 되었습니다.")
+            self._show_success_dialog(Path(msg).parent)
         else:
             self._progress_bar.hide()
             for card in self._cards.values():
@@ -1063,6 +1064,44 @@ class OpticalAnalysisPage(QWidget):
         self._clear_all_btn.setEnabled(has)
 
     # ── 헬퍼 ──────────────────────────────────────────────────────────
+    def _show_success_dialog(self, save_dir: Path) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("분석 완료")
+        dlg.setFixedWidth(360)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(28, 28, 28, 20)
+        layout.setSpacing(20)
+
+        msg_lbl = QLabel("분석을 성공적으로 완료하였습니다.")
+        msg_lbl.setFont(QFont("Segoe UI", 11))
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet("color: #1E293B;")
+        layout.addWidget(msg_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        open_btn = QPushButton("폴더 열기")
+        open_btn.setObjectName("dc-secondary")
+        open_btn.setMinimumHeight(36)
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(
+            lambda: os.startfile(str(save_dir)) if save_dir.exists() else None
+        )
+
+        ok_btn = QPushButton("확인")
+        ok_btn.setObjectName("dc-primary")
+        ok_btn.setMinimumHeight(36)
+        ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok_btn.clicked.connect(dlg.accept)
+
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
+
     def _set_status(self, msg: str, *, error: bool = False) -> None:
         color = "#DC2626" if error else "#64748B"
         self._status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
