@@ -1,8 +1,8 @@
 # RIMS – Raffaello Inspection & Metrology System
 
 GPIB 계측기로 MLCC 특성(정전용량, 손실계수, ESR, 임피던스 등)을 측정하거나
-광학 설계분석 이미지를 업로드하고, FastAPI 서버를 통해 MariaDB에 저장한 뒤
-웹 대시보드로 조회하는 시스템.
+광학 설계분석 이미지를 서버에 업로드·분석하고 결과 Excel을 다운로드하며,
+FastAPI 서버를 통해 MariaDB에 저장한 뒤 웹 대시보드로 조회하는 시스템.
 
 > **인프라**: Docker 미사용. Python 가상환경(venv) + systemd으로 운영합니다.
 > MariaDB는 리눅스 서버에 기설치된 것을 사용합니다.
@@ -18,6 +18,7 @@ GPIB 계측기로 MLCC 특성(정전용량, 손실계수, ESR, 임피던스 등)
 | API 서버 | Python 3.11+, FastAPI, Uvicorn, SQLAlchemy, Alembic |
 | 인증 | Knox ID 단독 입력 (접속 로그 서버 전송) |
 | DB | MariaDB (서버 기설치), PyMySQL |
+| 광학 분석 결과 | openpyxl (Excel 생성) |
 | 웹 대시보드 | FastAPI + Jinja2 (Python 일원화) |
 | 인프라 | Python venv, systemd |
 
@@ -140,15 +141,36 @@ mysql -u dc_user -p dc_db < db/seeds/sample_data.sql
 
 ## 광학 설계분석 모듈
 
-GPIB 계측기 없이 사용자가 별도로 저장한 광학 이미지를 서버에 업로드합니다.
+GPIB 계측기 없이 광학 이미지를 서버에 업로드하고, 분석 결과 Excel을 다운로드합니다.
 
-| 지원 형식 | 최대 크기 | 저장 위치 |
-|-----------|----------|-----------|
-| JPEG, PNG, BMP, TIFF, WebP | 50 MB | 서버 `{UPLOAD_DIR}/optical/` |
+### 클라이언트 파이프라인 (5단계, QThread 백그라운드 실행)
 
-- 업로드 시 원본 파일명·작업자·세션명·설명을 함께 저장
-- 서버에는 UUID 기반 파일명으로 저장 (원본 파일명 충돌 방지)
-- 업로드 이력은 `GET /api/v1/optical/records` 로 조회
+| 단계 | 동작 |
+|------|------|
+| 1 | 선택한 이미지를 ZIP으로 압축 |
+| 2 | `POST /optical/upload` — ZIP 전송, `folder_name` 수신 |
+| 3 | `POST /optical/analyze` — 서버 분석 완료까지 대기 (동기) |
+| 4 | `GET /optical/result/{folder_name}` — Excel 파일 수신 |
+| 5 | `~/Downloads/{folder_name}_result.xlsx` 저장 |
+
+### 서버 파일 경로
+
+| 경로 | 설명 |
+|------|------|
+| `{UPLOAD_DIR}/optical/uploads/{folder_name}/` | ZIP 압축 해제 이미지 (경로 A) |
+| `{UPLOAD_DIR}/optical/results/{folder_name}/` | 분석 결과 Excel (경로 B) |
+
+- `folder_name` 형식: `{lot_no}_{YYYYMMDD_HHMMSS}` (업로드·분석·다운로드 공통 키)
+- 지원 이미지 형식: JPEG, PNG, BMP, TIFF, WebP / ZIP 최대 크기: 50 MB
+- 분석 결과 Excel 헤더: No. / 파일명 / 분석 상태 (openpyxl 생성, `#1E3A5F` 헤더 스타일)
+
+### API
+
+```
+POST /api/v1/optical/upload          → { folder_name, lot_no, operator, status }
+POST /api/v1/optical/analyze         → { folder_name, status: "analyzed" }
+GET  /api/v1/optical/result/{folder_name} → Excel 파일 직접 반환 (.xlsx)
+```
 
 ---
 

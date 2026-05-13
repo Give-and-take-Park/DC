@@ -416,7 +416,13 @@ class _PipelineWorker(QObject):
             result_bytes = self._api.download_optical_result(folder_name)
 
             self._save_dir.mkdir(parents=True, exist_ok=True)
-            out_path = self._save_dir / f"{folder_name}_result.zip"
+
+            # ── 버전 A: ZIP 파일로 저장 ──────────────────────────────
+            # out_path = self._save_dir / f"{folder_name}_result.zip"
+            # out_path.write_bytes(result_bytes)
+
+            # ── 버전 B: Excel 파일로 저장 ────────────────────────────
+            out_path = self._save_dir / f"{folder_name}_result.xlsx"
             out_path.write_bytes(result_bytes)
 
             # ── 5단계: 완료 ──────────────────────────────────────────
@@ -1014,7 +1020,7 @@ class OpticalAnalysisPage(QWidget):
         self._progress_bar.show()
         self._set_status("시작 중…")
 
-        save_dir = Path.home() / "Documents" / "RIMS" / "results"
+        save_dir = Path.home() / "Downloads"
 
         self._thread = QThread()
         self._worker = _PipelineWorker(

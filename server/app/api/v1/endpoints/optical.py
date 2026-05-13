@@ -1,4 +1,3 @@
-import csv
 import io
 import zipfile
 from datetime import datetime, timezone
@@ -126,15 +125,38 @@ async def analyze_optical(
             if f.is_file() and f.suffix.lower() in image_exts
         )
 
-        # ── 실제 분석 로직을 여기에 구현 ──────────────────────────────
-        # 분석 결과를 Excel 형태로 result_dir 에 저장합니다.
-        # (현재는 플레이스홀더: 이미지 목록을 CSV로 저장)
-        csv_path = result_dir / f"{folder_name}_result.csv"
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            writer.writerow(["No.", "파일명", "분석 상태"])
-            for i, img in enumerate(image_files, start=1):
-                writer.writerow([i, img.name, "분석 완료 (플레이스홀더)"])
+        # ── 분석 결과를 Excel 로 저장 ─────────────────────────────────
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, PatternFill
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "분석 결과"
+
+        # 헤더
+        headers = ["No.", "파일명", "분석 상태"]
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(fill_type="solid", fgColor="1E3A5F")
+        header_align = Alignment(horizontal="center", vertical="center")
+        for col, h in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+
+        # 데이터 행
+        for i, img in enumerate(image_files, start=1):
+            ws.cell(row=i + 1, column=1, value=i).alignment = Alignment(horizontal="center")
+            ws.cell(row=i + 1, column=2, value=img.name)
+            ws.cell(row=i + 1, column=3, value="분석 완료").alignment = Alignment(horizontal="center")
+
+        # 열 너비 자동 조정
+        ws.column_dimensions["A"].width = 8
+        ws.column_dimensions["B"].width = 40
+        ws.column_dimensions["C"].width = 16
+
+        excel_path = result_dir / f"{folder_name}_result.xlsx"
+        wb.save(excel_path)
         # ─────────────────────────────────────────────────────────────
 
         return OpticalAnalyzeResponse(
@@ -148,26 +170,41 @@ async def analyze_optical(
         raise HTTPException(status_code=500, detail=f"분석 처리 중 오류: {exc}") from exc
 
 
+def _find_excel_file(result_dir: Path) -> Path:
+    """경로 B에서 첫 번째 Excel 파일의 경로를 반환한다."""
+    excel_exts = {".xlsx", ".xls"}
+    result_files = [
+        f for f in result_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in excel_exts
+    ]
+    if not result_files:
+        raise HTTPException(status_code=404, detail="분석 결과 Excel 파일이 없습니다.")
+    return result_files[0]
+
+
 @router.get("/result/{folder_name}")
 def download_optical_result(folder_name: str):
-    """경로 B의 분석 결과 파일을 ZIP으로 압축하여 반환합니다."""
+    """경로 B의 분석 결과 Excel 파일을 반환합니다."""
     result_dir = _safe_subdir(_results_base(), folder_name)
     if not result_dir.exists():
         raise HTTPException(status_code=404, detail="분석 결과 폴더를 찾을 수 없습니다.")
 
-    result_files = [f for f in result_dir.iterdir() if f.is_file()]
-    if not result_files:
-        raise HTTPException(status_code=404, detail="분석 결과 파일이 없습니다.")
+    excel_file = _find_excel_file(result_dir)
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in result_files:
-            zf.write(f, f.name)
-    buf.seek(0)
+    # ── 버전 A: Excel → ZIP 압축 후 전송 ────────────────────────────
+    # buf = io.BytesIO()
+    # with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    #     zf.write(excel_file, excel_file.name)
+    # buf.seek(0)
+    # return StreamingResponse(
+    #     buf,
+    #     media_type="application/zip",
+    #     headers={"Content-Disposition": f'attachment; filename="{excel_file.stem}_result.zip"'},
+    # )
 
-    download_name = f"{folder_name}_result.zip"
+    # ── 버전 B: Excel 파일 직접 전송 ────────────────────────────────
     return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+        open(excel_file, "rb"),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{excel_file.name}"'},
     )

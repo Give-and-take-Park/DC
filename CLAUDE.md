@@ -65,7 +65,7 @@ main.py → LoginDialog → Knox ID 입력 → log_access() fire-and-forget
      │ HomePage (3종 카드)                                  │
      │  ├─ DC-bias          → DCBiasMeasurementPage        │
      │  ├─ HALT / 8585      → MeasurementPage              │
-     │  └─ 광학 설계분석    → MeasurementPage (이미지 업로드) │
+     │  └─ 광학 설계분석    → OpticalAnalysisPage           │
      └─────────────────────────────────────────────────────┘
                ↓ (DC-bias / HALT·8585) 측정 시작 (QThread)
      MeasurementEngine → InstrumentRegistry → Driver → GPIB 계측기
@@ -74,20 +74,30 @@ main.py → LoginDialog → Knox ID 입력 → log_access() fire-and-forget
                                                             ↓
                                                           Server
 
-               ↓ (광학 설계분석) 이미지 파일 선택 → multipart 업로드
-                                                    APIClient → POST /optical/upload
+               ↓ (광학 설계분석) _PipelineWorker (QThread) 5단계 파이프라인
+                  1. 이미지 목록 ZIP 압축 (임시 파일)
+                  2. POST /optical/upload → folder_name 수신
+                  3. POST /optical/analyze → 서버 분석 완료 대기 (동기)
+                  4. GET  /optical/result/{folder_name} → Excel 다운로드
+                  5. ~/Downloads/{folder_name}_result.xlsx 저장
 
 [서버]
-POST /api/v1/auth/login     → JWT 발급
-POST /api/v1/measurements   → MeasurementService → CRUD → MariaDB
-POST /api/v1/optical/upload → 이미지 저장(UUID 파일명) + optical_analyses 레코드 생성
-GET  /api/v1/optical/records → 업로드 이력 조회
-GET  /                       → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
+POST /api/v1/auth/login              → JWT 발급
+POST /api/v1/measurements            → MeasurementService → CRUD → MariaDB
+POST /api/v1/optical/upload          → ZIP 수신 → 경로 A에 압축 해제 → folder_name 반환
+POST /api/v1/optical/analyze         → 경로 A 이미지 분석 → 경로 B에 Excel 저장 → 동기 응답
+GET  /api/v1/optical/result/{folder_name} → 경로 B의 Excel 파일 직접 반환
+GET  /                               → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 ```
+
+**광학 파일 저장 경로**
+- 경로 A (업로드): `{UPLOAD_DIR}/optical/uploads/{folder_name}/` — ZIP 압축 해제 이미지
+- 경로 B (결과): `{UPLOAD_DIR}/optical/results/{folder_name}/` — 분석 결과 Excel
+- `folder_name` 형식: `{lot_no}_{YYYYMMDD_HHMMSS}` (업로드·분석·다운로드의 공통 키)
+- 클라이언트 저장 경로: `~/Downloads/{folder_name}_result.xlsx`
 
 - **단위 정규화**: `server/app/services/normalizer.py`에서 수신값을 표준 단위(F, Ω, V)로 변환 후 저장
 - **측정 함수**: E4980A는 `CPD` 모드(Cp + 손실계수 D) 사용 — MLCC DC Bias 평가 표준
-- **파일 업로드 경로**: `{UPLOAD_DIR}/optical/{uuid}.{ext}` (서버 로컬 디스크)
 - **클라이언트 앱 이름**: Raffaello Inspection & Metrology System (약칭 **RIMS**)
   - 창 프레임 타이틀: `RIMS`
   - 헤더: `RIMS` (35px bold) + `Raffaello Inspection & Metrology System` (20px normal)
@@ -158,23 +168,31 @@ GET  /                       → Jinja2 웹 대시보드 (FastAPI 직접 서빙)
 }
 ```
 
-### 광학 설계분석 이미지 업로드
+### 광학 설계분석 파이프라인
+
 `POST /api/v1/optical/upload` — multipart/form-data
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `file` | File | 이미지 파일 (JPEG/PNG/BMP/TIFF/WebP, 최대 50 MB) |
+| `file` | File | 이미지 ZIP 파일 (최대 50 MB) |
+| `lot_no` | Form | Lot 번호 (7자리 영문+숫자) |
 | `operator` | Form (optional) | 작업자명 |
-| `session_name` | Form (optional) | 세션명 |
-| `description` | Form (optional) | 설명 |
 
 ```json
-→ { "id": 1, "original_filename": "sample.jpg", "file_size": 204800,
-    "uploaded_at": "2026-02-28T10:00:00Z", "status": "uploaded" }
+→ { "folder_name": "ABC1234_20260514_102030", "lot_no": "ABC1234",
+    "operator": "홍길동", "status": "uploaded" }
 ```
 
-`GET /api/v1/optical/records` — 이미지 업로드 이력 조회
-- Query params: `page` (기본 1), `size` (기본 20), `operator` (optional)
+`POST /api/v1/optical/analyze`
+
+```json
+{ "folder_name": "ABC1234_20260514_102030" }
+→ { "folder_name": "ABC1234_20260514_102030", "status": "analyzed" }
+```
+
+`GET /api/v1/optical/result/{folder_name}` — 분석 결과 Excel 파일 직접 반환
+- 응답: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- 다운로드 파일명: `{folder_name}_result.xlsx`
 
 ## 환경 변수
 
