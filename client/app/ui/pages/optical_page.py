@@ -548,13 +548,36 @@ class OpticalAnalysisPage(QWidget):
 
         self._lot_edit = QLineEdit()
         self._lot_edit.setFont(QFont("Segoe UI", 9))
-        self._lot_edit.setPlaceholderText("7자리 (영문+숫자)")
+        self._lot_edit.setPlaceholderText("7자리 영문/숫자")
         self._lot_edit.setMaxLength(7)
         self._lot_edit.setValidator(
             QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9]{0,7}"))
         )
         self._lot_edit.setStyleSheet(_INPUT_STYLE)
-        form.addRow("Lot No:", self._lot_edit)
+
+        _test_btn = QPushButton("TEST")
+        _test_btn.setFixedWidth(46)
+        _test_btn.setFixedHeight(32)
+        _test_btn.setFont(QFont("Segoe UI", 8))
+        _test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _test_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        _test_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: #F1F5F9; color: #475569;"
+            "  border: 1.5px solid #CBD5E1; border-radius: 6px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #E2E8F0; border-color: #94A3B8; }"
+            "QPushButton:pressed { background: #CBD5E1; }"
+        )
+        _test_btn.clicked.connect(lambda: self._lot_edit.setText("TestLot"))
+
+        lot_row = QHBoxLayout()
+        lot_row.setSpacing(4)
+        lot_row.setContentsMargins(0, 0, 0, 0)
+        lot_row.addWidget(self._lot_edit, 1)
+        lot_row.addWidget(_test_btn, 0)
+        form.addRow("Lot No:", lot_row)
 
         inner.addWidget(info_box)
 
